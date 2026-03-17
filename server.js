@@ -13,18 +13,24 @@ let last = 0;
 async function getPatch() {
   if (cache && Date.now() - last < 3600000) return cache;
 
+  const base = "https://www.leagueoflegends.com";
+
   const { data } = await axios.get(
-    "https://www.leagueoflegends.com/pt-br/news/game-updates/"
+    base + "/pt-br/news/game-updates/"
   );
 
   const $ = cheerio.load(data);
-  const link = $("a[href*='/news/game-updates/']").first().attr("href");
 
-  const url = link.startsWith("http")
-  ? link
-  : "https://www.leagueoflegends.com" + link;
+  let link = $("a[href*='/news/game-updates/']").first().attr("href");
 
-const page = await axios.get(url);
+  if (!link) throw new Error("Link do patch não encontrado");
+
+  // 🔥 GARANTE URL CORRETA
+  if (!link.startsWith("http")) {
+    link = base + link;
+  }
+
+  const page = await axios.get(link);
   const $$ = cheerio.load(page.data);
 
   cache = $$("body").text().slice(0, 3000);
