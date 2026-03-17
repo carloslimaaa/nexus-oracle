@@ -39,6 +39,10 @@ async function getPatch() {
   return cache;
 }
 
+app.get("/", (req, res) => {
+  res.json({ status: "Nexus Oracle online" });
+});
+
 app.post("/oracle", async (req, res) => {
   try {
     const { question, context = {} } = req.body;
