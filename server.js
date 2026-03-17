@@ -71,8 +71,9 @@ ${question}
 
     res.json({ text: data.choices[0].message.content });
   } catch (e) {
-    res.status(500).json({ error: "erro" });
-  }
+  console.log(e);
+  res.status(500).json({ error: e.message });
+}
 });
 
 app.listen(3000, () => console.log("rodando"));
