@@ -41,7 +41,11 @@ async function getPatch() {
 
 app.post("/oracle", async (req, res) => {
   try {
-    const { question, context } = req.body;
+    const { question, context = {} } = req.body;
+
+const allies = context.allies || "nenhum";
+const enemies = context.enemies || "nenhum";
+const bans = context.bans || "nenhum";
 
     const patch = await getPatch();
 
