@@ -18,9 +18,13 @@ async function getPatch() {
   );
 
   const $ = cheerio.load(data);
-  const link = $("a").first().attr("href");
+  const link = $("a[href*='/news/game-updates/']").first().attr("href");
 
-  const page = await axios.get("https://www.leagueoflegends.com" + link);
+  const url = link.startsWith("http")
+  ? link
+  : "https://www.leagueoflegends.com" + link;
+
+const page = await axios.get(url);
   const $$ = cheerio.load(page.data);
 
   cache = $$("body").text().slice(0, 3000);
