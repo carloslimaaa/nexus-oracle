@@ -83,6 +83,14 @@ ${question}
 
     const data = await response.json();
 
+console.log("OPENAI RESPONSE:", data);
+
+if (!data.choices) {
+  return res.status(500).json({ error: JSON.stringify(data) });
+}
+
+res.json({ text: data.choices[0].message.content });
+
     res.json({ text: data.choices[0].message.content });
   } catch (e) {
   console.log(e);
