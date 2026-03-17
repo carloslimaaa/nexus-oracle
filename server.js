@@ -43,9 +43,9 @@ app.post("/oracle", async (req, res) => {
   try {
     const { question, context = {} } = req.body;
 
-const allies = context.allies || "nenhum";
-const enemies = context.enemies || "nenhum";
-const bans = context.bans || "nenhum";
+    const allies = context.allies || "nenhum";
+    const enemies = context.enemies || "nenhum";
+    const bans = context.bans || "nenhum";
 
     const patch = await getPatch();
 
@@ -55,9 +55,9 @@ Você é um jogador Challenger especialista em League of Legends.
 PATCH:
 ${patch}
 
-Aliados: ${context.allies}
-Inimigos: ${context.enemies}
-Bans: ${context.bans}
+Aliados: ${allies}
+Inimigos: ${enemies}
+Bans: ${bans}
 
 Responda com:
 - Campeão ideal
@@ -69,33 +69,35 @@ Pergunta:
 ${question}
 `;
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
-        "Content-Type": "application/json",
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-3-haiku-20240307",
+        max_tokens: 800,
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
       },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+      {
+        headers: {
+          "x-api-key": process.env.ANTHROPIC_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-    const data = await response.json();
+    const text = response.data.content[0].text;
 
-console.log("OPENAI RESPONSE:", data);
+    res.json({ text });
 
-if (!data.choices) {
-  return res.status(500).json({ error: JSON.stringify(data) });
-}
-
-res.json({ text: data.choices[0].message.content });
-
-    res.json({ text: data.choices[0].message.content });
   } catch (e) {
-  console.log(e);
-  res.status(500).json({ error: e.message });
-}
+    console.log(e.response?.data || e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.listen(3000, () => console.log("rodando"));
