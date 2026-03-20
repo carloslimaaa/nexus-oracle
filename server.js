@@ -10,8 +10,8 @@ app.use(cors());
 
 // ── Gemini ──
 const genAI      = new GoogleGenerativeAI(process.env.GEMINI_KEY);
-const textModel  = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-const visionModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const textModel  = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const visionModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
 // ── Cache do patch ──
 let patchCache = "";
