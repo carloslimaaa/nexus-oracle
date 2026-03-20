@@ -2,16 +2,10 @@ import express from "express";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import cors from "cors";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 app.use(cors());
-
-// ── Gemini ──
-const genAI      = new GoogleGenerativeAI(process.env.GEMINI_KEY);
-const textModel  = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-const visionModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
 // ── Cache do patch ──
 let patchCache = "";
@@ -44,12 +38,12 @@ async function getPatch() {
   return patchCache;
 }
 
-// ── GET / ──
+// ── GET / health check ──
 app.get("/", (req, res) => {
-  res.json({ status: "Nexus Oracle online", modelo: "Gemini 1.5 Flash (gratuito)" });
+  res.json({ status: "Nexus Oracle online", modelos: "Groq (texto) + OpenRouter (visão)" });
 });
 
-// ── POST /oracle ──
+// ── POST /oracle — texto via Groq ──
 app.post("/oracle", async (req, res) => {
   try {
     const { question, context = {} } = req.body;
@@ -60,7 +54,7 @@ app.post("/oracle", async (req, res) => {
     const bans    = context.bans    || "nenhum";
     const patch   = await getPatch();
 
-    const prompt = `Você é um coach Challenger de League of Legends. Responda em português brasileiro de forma direta.
+    const prompt = `Você é um coach Challenger de League of Legends. Responda em português brasileiro de forma direta e objetiva.
 
 PATCH ATUAL:
 ${patch}
@@ -78,17 +72,41 @@ Responda com:
 
 Pergunta: ${question}`;
 
-    const result = await textModel.generateContent(prompt);
-    const text   = result.response.text();
+    const response = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "llama-3.1-8b-instant",
+        max_tokens: 800,
+        messages: [
+          {
+            role: "system",
+            content: "Você é um coach Challenger de League of Legends. Responda sempre em português brasileiro.",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${process.env.GROQ_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const text = response.data.choices[0].message.content;
     res.json({ text });
 
   } catch (e) {
-    console.log("ERRO /oracle:", e.message);
-    res.status(500).json({ error: e.message });
+    const detail = e.response?.data || e.message;
+    console.log("ERRO /oracle:", JSON.stringify(detail));
+    res.status(500).json({ error: JSON.stringify(detail) });
   }
 });
 
-// ── POST /analyze ──
+// ── POST /analyze — visão via OpenRouter ──
 app.post("/analyze", async (req, res) => {
   try {
     const { image, context = {} } = req.body;
@@ -102,7 +120,7 @@ app.post("/analyze", async (req, res) => {
 
 Contexto: meu time: ${allies} | inimigos: ${enemies} | bans: ${bans}
 
-Analise o screenshot e retorne APENAS JSON válido, sem nenhum texto fora:
+Analise o screenshot e retorne APENAS JSON válido, sem nenhum texto fora do JSON:
 {
   "acao": "o que fazer AGORA em até 8 palavras",
   "urgencia": "alta|media|baixa",
@@ -110,15 +128,43 @@ Analise o screenshot e retorne APENAS JSON válido, sem nenhum texto fora:
   "observacoes": ["obs1", "obs2"]
 }
 
-Observe: vida/mana, posição, objetivos (dragão/barão/torretas), ameaças.
-Se a imagem não mostrar claramente o jogo: {"acao":"Aguardando imagem clara","urgencia":"baixa","detalhes":"Não foi possível identificar o jogo.","observacoes":[]}`;
+Observe: vida/mana do jogador, posição no mapa, objetivos (dragão/barão/torretas), ameaças visíveis.
+Se a imagem não mostrar claramente o jogo, retorne: {"acao":"Aguardando imagem clara","urgencia":"baixa","detalhes":"Imagem não identificada como League of Legends.","observacoes":[]}`;
 
-    const result = await visionModel.generateContent([
-      prompt,
-      { inlineData: { data: image, mimeType: "image/jpeg" } },
-    ]);
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "meta-llama/llama-3.2-11b-vision-instruct:free",
+        max_tokens: 400,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: prompt,
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${image}`,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENROUTER_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://nexus-oracle.onrender.com",
+          "X-Title": "Nexus Oracle",
+        },
+      }
+    );
 
-    const raw = result.response.text();
+    const raw = response.data.choices[0].message.content;
 
     let parsed;
     try {
@@ -136,8 +182,9 @@ Se a imagem não mostrar claramente o jogo: {"acao":"Aguardando imagem clara","u
     res.json(parsed);
 
   } catch (e) {
-    console.log("ERRO /analyze:", e.message);
-    res.status(500).json({ error: e.message });
+    const detail = e.response?.data || e.message;
+    console.log("ERRO /analyze:", JSON.stringify(detail));
+    res.status(500).json({ error: JSON.stringify(detail) });
   }
 });
 
