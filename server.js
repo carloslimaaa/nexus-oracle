@@ -7,852 +7,866 @@ app.use(express.json({ limit: "10mb" }));
 app.use(cors());
 
 const GROQ_KEY = process.env.GROQ_KEY;
+const RIOT_KEY = process.env.RIOT_KEY; // opcional — habilita dados de OTPs Challenger
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ESTRUTURA DO BANCO:
-//   runas[]  → paths de runa com campo "quando" explicando a condição
-//   builds[] → paths de build com campo "quando" explicando a condição
-//   sit      → itens situacionais por situação de jogo
-//   f[]      → feitiços padrão
-//   d[]      → dicas mecânicas
-// O Oracle recebe TODOS os paths e escolhe o melhor para o jogo atual
-// ═══════════════════════════════════════════════════════════════════════════
-
-const C = {
-
-  // ─────────────────────────── MID ────────────────────────────────────────
-
-  fizz: { nome:"Fizz", rota:"mid",
-    runas:[
-      { quando:"maioria dos jogos — inimigos frágeis/squishy (ADC, mago, assassino)", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Nimbo de Tempestade", s2:"Transcendência", sh:["Adaptativo","Adaptativo","Armadura"] },
-      { quando:"vs time tanque/bruiser (3+ tanques) ou lane de poke (Zoe, Syndra, Xerath)", p:"Feitiçaria", k:"Fase Rush", r1:"Manto de Nuvem", r2:"Celeridade", r3:"Coleta de Tempestades", s:"Dominação", s1:"Sabor do Sangue", s2:"Caçador Ganancioso", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"time inimigo frágil, 2+ carries para matar", items:["Foguetão Hextech","Chama das Sombras","Sandálias do Feiticeiro","Ampulheta de Zhonya","Chapéu Mortal de Rabadon","Bastão do Vazio"], ini:"Livro de Feitiços Sombrio + Poção" },
-      { quando:"3+ tanques/bruisers, fights longas, muita cura inimiga", items:["Riftmaker","Sandálias do Feiticeiro","Tormento de Liandry","Rylai's Crystal Scepter","Chapéu Mortal de Rabadon","Bastão do Vazio"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Morellonomicon 3° item vs Soraka/Yuumi/Mundo/Aatrox | Véu da Banshee vs Malzahar/Syndra/Veigar CC | Ampulheta de Zhonya vs Zed/Talon/Rengar",
-    f:["Ignite","Flash"],
-    d:["All-in level 6: E → Q → R → Ignite","E cancela CC (Lux R, Zed R, Malzahar R)","Nunca troque antes do 6","Post-6 roame bot/top após cada kill"] },
-
-  ahri: { nome:"Ahri", rota:"mid",
-    runas:[
-      { quando:"assassinar carries isolados, snowball pesado", p:"Dominação", k:"Colheita Sombria", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Adaptativo","Adaptativo","Armadura"] },
-      { quando:"dano sustentado, time tanque ou lane segura para farmar", p:"Feitiçaria", k:"Cometa Arcano", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — frágeis/squishy no time inimigo", items:["Luden's Companheiro","Sandálias do Feiticeiro","Chama das Sombras","Chapéu Mortal de Rabadon","Véu da Banshee","Bastão do Vazio"], ini:"Anel de Doran + Poção" },
-      { quando:"time tanque ou muito sustain inimigo", items:["Luden's Companheiro","Sandálias do Feiticeiro","Tormento de Liandry","Rylai's Crystal Scepter","Chapéu Mortal de Rabadon","Bastão do Vazio"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Morellonomicon vs cura excessiva | Ampulheta de Zhonya vs Zed/assassinos AD | Véu da Banshee vs AP CC pesado",
-    f:["Ignite","Flash"],
-    d:["Charm (E) ANTES de Q e W para amplificar dano","R tem 3 cargas — use para escape também","Roame pelo flanking lateral"] },
-
-  syndra: { nome:"Syndra", rota:"mid",
-    runas:[
-      { quando:"poke e dano sustentado na lane (maioria dos jogos)", p:"Feitiçaria", k:"Cometa Arcano", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-      { quando:"vs assassino ou burst pesado (precisa de all-in)", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Adaptativo","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"dano burst máximo (inimigos frágeis)", items:["Coroa Sombria","Sandálias do Feiticeiro","Chapéu Mortal de Rabadon","Horizonte Foco","Bastão do Vazio","Véu da Banshee"], ini:"Anel de Doran + Poção" },
-      { quando:"vs time tanque ou inimigos com muita MR", items:["Coroa Sombria","Sandálias do Feiticeiro","Tormento de Liandry","Bastão do Vazio","Chapéu Mortal de Rabadon","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Morellonomicon vs cura | Ampulheta de Zhonya vs Zed/Talon | Véu da Banshee vs Malzahar/Veigar",
-    f:["Flash","Teleporte"],
-    d:["E stun → Q → R (7 orbes) → W: combo burst total","Level 9 com Q maxado é o power spike","Sempre mantenha 3+ orbes no chão"] },
-
-  zed: { nome:"Zed", rota:"mid",
-    runas:[
-      { quando:"snowball pesado, inimigos squishy ou sem peel", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Perseguidor Sombrio", r3:"Caçador Voraz", s:"Precisão", s1:"Triunfo", s2:"Lenda: Alacrity", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs poke heavy ou precisa de sustain (Karma, Lulu, Soraka como suporte)", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Dominação", s1:"Sabor do Sangue", s2:"Caçador Voraz", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"assassinar carries isolados (padrão)", items:["Faca de Dusk","Sandálias Sombrias","Véu de Morte","Relâmpago Estático","Lâmina da Noite Infinita","Guardião Imortal"], ini:"Espada Longa + Poção" },
-      { quando:"time com tank frontal ou precisa de sustain em fights longas", items:["Faca de Dusk","Botas de Treino","Serpentine Fang","Dança da Morte","Relâmpago Estático","Guardião Imortal"], ini:"Espada Longa + Poção" },
-    ],
-    sit:"Serpentine Fang vs escudos (Lulu/Janna/Karma) | Dança da Morte vs tanques | Guardião Imortal vs burst pesado",
-    f:["Ignite","Flash"],
-    d:["Combo: W shadow → E → Q → R → Q → E → Ignite","Use W para checar brushes antes de trade","Roame apenas com Faca de Dusk completa"] },
-
-  katarina: { nome:"Katarina", rota:"mid",
-    runas:[
-      { quando:"burst e one-shot (maioria dos jogos)", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Adaptativo","Adaptativo","Armadura"] },
-      { quando:"vs time tanque/bruiser (3+ frontline) ou precisa de damage sustentado", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Dominação", s1:"Sabor do Sangue", s2:"Caçador Ganancioso", sh:["Adaptativo","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"inimigos frágeis, 2+ carries para resetar", items:["Lâmina da Hextech","Sandálias do Feiticeiro","Ampulheta de Zhonya","Coroa Sombria","Chapéu Mortal de Rabadon","Bastão do Vazio"], ini:"Adaga Longa + Poção" },
-      { quando:"vs tanques/bruisers ou muito CC inimigo", items:["Riftmaker","Sandálias do Feiticeiro","Tormento de Liandry","Cimitarra Mercurial","Chapéu Mortal de Rabadon","Bastão do Vazio"], ini:"Adaga Longa + Poção" },
-    ],
-    sit:"Cimitarra Mercurial vs muito CC (Malzahar/Alistar) | Morellonomicon vs cura | Véu da Banshee vs burst AP",
-    f:["Flash","Ignite"],
-    d:["Nunca use R com CC ativo","Reset de W com kill/assist — gerencie E cuidadosamente","Roame agressivamente pós-6"] },
-
-  yasuo: { nome:"Yasuo", rota:"mid",
-    runas:[
-      { quando:"fights longas, teamfight, inimigos com tanques/bruisers", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Determinação", s1:"Demolir", s2:"Inabalável", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"duelos 1v1, lane de assassino ou snowball rápido", p:"Precisão", k:"Pressione o Ataque", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Determinação", s1:"Demolir", s2:"Inabalável", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — teamfight e dano sustentado", items:["Shieldbow Imortal","Botas de Berserker","Kraken Slayer","Fio do Infinito","Guardião Mortal","Lembrete Mortal"], ini:"Espada Longa + Poção" },
-      { quando:"vs time frágil puro ou 2+ carries squishy", items:["Fio do Infinito","Botas de Berserker","Shieldbow Imortal","Kraken Slayer","Lembrete Mortal","Guardião Mortal"], ini:"Espada Longa + Poção" },
-    ],
-    sit:"Cimitarra Mercurial vs muito CC ou Malzahar | Guardião Mortal vs tanques | Lembrete Mortal vs tanques AP",
-    f:["Flash","Ignite"],
-    d:["Q 3 hits = Tornado — nunca desperdice em minion","R requer knockup aliado — coordene com Malphite/Amumu","Passive shield recarrega fora do combate"] },
-
-  ekko: { nome:"Ekko", rota:"mid",
-    runas:[
-      { quando:"assassinar carries isolados, one-shot potential", p:"Dominação", k:"Colheita Sombria", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Inspiração", s1:"Perspicácia Cósmica", s2:"Capacete de Gladiador", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-      { quando:"vs time tanque ou lane contra bruiser", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"inimigos frágeis, assassinar carries", items:["Foguetão Hextech","Sandálias do Feiticeiro","Ampulheta de Zhonya","Lich Bane","Chapéu Mortal de Rabadon","Bastão do Vazio"], ini:"Anel de Doran + Poção" },
-      { quando:"vs time tanque ou sustain", items:["Riftmaker","Sandálias do Feiticeiro","Tormento de Liandry","Ampulheta de Zhonya","Chapéu Mortal de Rabadon","Bastão do Vazio"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Morellonomicon vs cura | Véu da Banshee vs AP CC | Ampulheta de Zhonya vs AD assassinos",
-    f:["Flash","Ignite"],
-    d:["W: posicione onde o inimigo VAI estar, não onde está","R é panic button — nunca use no início do fight","Passive 3 hits em tower = push rápido"] },
-
-  veigar: { nome:"Veigar", rota:"mid",
-    runas:[
-      { quando:"dano crescente com AP — maioria dos jogos", p:"Feitiçaria", k:"Cometa Arcano", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-      { quando:"vs assassino que vai te matar antes de ter AP (Zed/Talon/Akali)", p:"Feitiçaria", k:"Fase Rush", r1:"Manto de Nuvem", r2:"Celeridade", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"burst e execute (padrão)", items:["Coroa Sombria","Sandálias do Feiticeiro","Chapéu Mortal de Rabadon","Bastão do Vazio","Ampulheta de Zhonya","Véu da Banshee"], ini:"Anel de Doran + Poção" },
-      { quando:"vs time tanque ou múltiplos bruisers", items:["Coroa Sombria","Sandálias do Feiticeiro","Tormento de Liandry","Bastão do Vazio","Chapéu Mortal de Rabadon","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Véu da Banshee vs assassinos que te one-shotam | Ampulheta de Zhonya vs AD | Morellonomicon vs cura",
-    f:["Flash","Teleporte"],
-    d:["Farm Q em minions SEMPRE — nunca perca um CS","E cage em cantos de parede = stun garantido","R execute: mais dano com menos HP no inimigo"] },
-
-  lux: { nome:"Lux", rota:"mid",
-    runas:[
-      { quando:"poke e dano de burst (maioria dos jogos)", p:"Feitiçaria", k:"Cometa Arcano", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-      { quando:"vs time dive pesado — precisa de damage + CC mais frequente", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"burst máximo (squishy inimigos)", items:["Luden's Companheiro","Sandálias do Feiticeiro","Chama das Sombras","Chapéu Mortal de Rabadon","Bastão do Vazio","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-      { quando:"vs time tanque — need penetração", items:["Coroa Sombria","Sandálias do Feiticeiro","Tormento de Liandry","Bastão do Vazio","Chapéu Mortal de Rabadon","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Morellonomicon vs cura | Véu da Banshee vs AP CC | Ampulheta de Zhonya vs AD dive",
-    f:["Flash","Ignite"],
-    d:["Q raiz 2 alvos — sempre acerte ambos","R baixo CD com CDR — use para harass também","Passive Illumination: auto proc = burst extra"] },
-
-  orianna: { nome:"Orianna", rota:"mid",
-    runas:[
-      { quando:"poke e teamfight (maioria dos jogos)", p:"Feitiçaria", k:"Cometa Arcano", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-      { quando:"vs assassino pesado (Zed/Akali/Katarina) — precisa de survivabilidade", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Condicionamento", r3:"Inabalável", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-    ],
-    builds:[
-      { quando:"padrão", items:["Luden's Companheiro","Sandálias do Feiticeiro","Horizonte Foco","Chapéu Mortal de Rabadon","Bastão do Vazio","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-      { quando:"vs time tanque/sustain", items:["Coroa Sombria","Sandálias do Feiticeiro","Tormento de Liandry","Bastão do Vazio","Chapéu Mortal de Rabadon","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Morellonomicon vs cura | Véu da Banshee vs CC/assassinos | Ampulheta de Zhonya vs Zed",
-    f:["Flash","Teleporte"],
-    d:["Ball placement: mantenha ON aliado para R setup","R pull: máximo com 3+ inimigos","Q move ball, W damage e shield aliado com ball"] },
-
-  malzahar: { nome:"Malzahar", rota:"mid",
-    runas:[
-      { quando:"controle de carry com R (maioria dos jogos)", p:"Feitiçaria", k:"Cometa Arcano", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-      { quando:"vs dive pesado ou jungler aggressivo — precisa de dano rápido", p:"Dominação", k:"Colheita Sombria", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — controle e dano DoT", items:["Criador de Fendas","Sandálias do Feiticeiro","Tormento de Liandry","Bastão do Vazio","Chapéu Mortal de Rabadon","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-      { quando:"vs time tanque — penetração máxima", items:["Criador de Fendas","Sandálias do Feiticeiro","Bastão do Vazio","Tormento de Liandry","Chapéu Mortal de Rabadon","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Morellonomicon vs cura | Passive spellshield: use com cuidado contra Q/E inimigo",
-    f:["Flash","Ignite"],
-    d:["R (suppressão): use em carry — time faz o dano","Void Swarm (passive): invocados com habilidades — farm wave","E silence: interrupt channeling de ults inimigos"] },
-
-  leblanc: { nome:"LeBlanc", rota:"mid",
-    runas:[
-      { quando:"burst e one-shot de carries (maioria dos jogos)", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Adaptativo","Adaptativo","Armadura"] },
-      { quando:"vs lane tankona ou bruiser que anula burst", p:"Feitiçaria", k:"Fase Rush", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Dominação", s1:"Sabor do Sangue", s2:"Caçador Ganancioso", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"burst puro — squishy inimigos", items:["Luden's Companheiro","Sandálias do Feiticeiro","Chama das Sombras","Chapéu Mortal de Rabadon","Bastão do Vazio","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-      { quando:"vs time tanque", items:["Criador de Fendas","Sandálias do Feiticeiro","Tormento de Liandry","Chapéu Mortal de Rabadon","Bastão do Vazio","Ampulheta de Zhonya"], ini:"Anel de Doran + Poção" },
-    ],
-    sit:"Ampulheta de Zhonya vs Zed/assassinos AD | Véu da Banshee vs AP CC",
-    f:["Flash","Ignite"],
-    d:["Combo: W dash → E chain → Q → Ignite","W return após dash = escape seguro","Clone (R) confunde inimigos — use em chase"] },
-
-  // ─────────────────────────── TOP ────────────────────────────────────────
-
-  darius: { nome:"Darius", rota:"top",
-    runas:[
-      { quando:"brigas longas, inimigos que ficam na lane (maioria dos jogos)", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Condicionamento", r3:"Inabalável", s:"Precisão", s1:"Triunfo", s2:"Última Resistência", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs time full AD ou muito poke ranged na top", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Osso Revestido", r3:"Inabalável", s:"Precisão", s1:"Triunfo", s2:"Última Resistência", sh:["Velocidade de Ataque","Armadura","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — bruiser com penetração", items:["Quebra-Passos","Botas de Mercúrio","Aço do Coração","Pele de Pedra de Gárgula","Força da Natureza","Armadura de Espinhos"], ini:"Espada Longa + Poção" },
-      { quando:"vs full AP ou 3+ AP inimigos", items:["Quebra-Passos","Botas de Mercúrio","Força da Natureza","Pele de Pedra de Gárgula","Aço do Coração","Armadura de Espinhos"], ini:"Doran Shield + Poção" },
-    ],
-    sit:"Armadura de Espinhos vs Warwick/Mundo/cura pesada | Botas de Mercúrio vs CC pesado | Força da Natureza obrigatória vs 3+ AP",
-    f:["Flash","Ignite"],
-    d:["5 stacks hemorragia + Guilhotina = kill garantida","Q borda externa: cura + dano bônus","W: pull inimigos que tentam kitar"] },
-
-  garen: { nome:"Garen", rota:"top",
-    runas:[
-      { quando:"brigas sustentadas, split push (maioria dos jogos)", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Condicionamento", r3:"Inabalável", s:"Precisão", s1:"Triunfo", s2:"Lenda: Persistência", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs ranged top (Teemo/Quinn/Jayce) — precisa de sustain extra", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Osso Revestido", r3:"Crescimento Excessivo", s:"Precisão", s1:"Triunfo", s2:"Última Resistência", sh:["Velocidade de Ataque","Armadura","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão", items:["Quebra-Passos","Botas de Treino","Aço do Coração","Pele de Pedra de Gárgula","Força da Natureza","Armadura de Espinhos"], ini:"Doran Shield + Poção" },
-      { quando:"vs full AP", items:["Quebra-Passos","Botas de Mercúrio","Força da Natureza","Pele de Pedra de Gárgula","Aço do Coração","Armadura de Espinhos"], ini:"Doran Shield + Poção" },
-    ],
-    sit:"Armadura de Espinhos vs cura pesada | Força da Natureza obrigatória vs 3+ AP | Botas de Mercúrio vs CC pesado",
-    f:["Flash","Teleporte"],
-    d:["E cancela slow — use para alcançar kiting","Passive regen: 8s fora de combate","R mais forte quanto mais kills o inimigo tiver"] },
-
-  irelia: { nome:"Irelia", rota:"top",
-    runas:[
-      { quando:"duelos 1v1, snowball (maioria dos jogos)", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Determinação", s1:"Condicionamento", s2:"Inabalável", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs time full AP ou much range", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Tenacidade", r3:"Última Resistência", s:"Determinação", s1:"Condicionamento", s2:"Inabalável", sh:["Velocidade de Ataque","Armadura","Resistência Mágica"] },
-    ],
-    builds:[
-      { quando:"padrão — anti-cura e dano físico", items:["Faca Chempunk Serrilhada","Botas de Treino","Espada do Rei Destruído","Lâmina Raivosa","Cimitarra Mercurial","Guardião Imortal"], ini:"Espada Longa + Poção" },
-      { quando:"vs AP heavy ou CC pesado (stuns longos)", items:["Faca Chempunk Serrilhada","Botas de Mercúrio","Cimitarra Mercurial","Espada do Rei Destruído","Guardião Imortal","Força da Natureza"], ini:"Espada Longa + Poção" },
-    ],
-    sit:"Cimitarra Mercurial obrigatória vs CC pesado | Armadura de Espinhos vs Fiora/cura | Faca Chempunk vs qualquer cura relevante",
-    f:["Flash","Ignite"],
-    d:["4 stacks passive antes de engajar","Q reset em low HP inimigo","R horizontal divide o grupo"] },
-
-  camille: { nome:"Camille", rota:"top",
-    runas:[
-      { quando:"brigas longas, split push (maioria dos jogos)", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Inspiração", s1:"Perspicácia Cósmica", s2:"Calçados Mágicos", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs squishy que você one-shot (Teemo/mago top)", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Precisão", s1:"Triunfo", s2:"Golpe de Misericórdia", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão", items:["Força da Trindade","Botas de Treino","Lança de Shojin","Dança da Morte","Sterak's Gage","Protetor do Guardião"], ini:"Espada Longa + Poção" },
-      { quando:"vs full AP ou muito CC", items:["Força da Trindade","Botas de Mercúrio","Lança de Shojin","Cimitarra Mercurial","Sterak's Gage","Força da Natureza"], ini:"Espada Longa + Poção" },
-    ],
-    sit:"Cimitarra Mercurial vs CC pesado | Lembrete Mortal vs tanques com HP | Dança da Morte vs poison/DoT",
-    f:["Flash","Ignite"],
-    d:["W borda externa: slow/stun","E gancho em parede + R = lock 1v1 garantido","Split push é sua win condition"] },
-
-  jayce: { nome:"Jayce", rota:"top",
-    runas:[
-      { quando:"brigas longas com forma martelo (maioria dos jogos)", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Inspiração", s1:"Calçados Mágicos", s2:"Perspicácia Cósmica", sh:["Adaptativo","Adaptativo","Armadura"] },
-      { quando:"poke dominante na lane (inimigo que não consegue te alcançar)", p:"Precisão", k:"Primeiro Golpe", r1:"Presença de Espírito", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Inspiração", s1:"Calçados Mágicos", s2:"Perspicácia Cósmica", sh:["Adaptativo","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"all-in e burst físico", items:["Lâmina Sanguessuga","Botas de Treino","Machado Negro","Rancor de Serylda","Dança da Morte","Fio do Infinito"], ini:"Espada Longa + Poção" },
-      { quando:"vs tanques — need penetração de armor", items:["Lâmina Sanguessuga","Botas de Treino","Rancor de Serylda","Lembrete Mortal","Dança da Morte","Fio do Infinito"], ini:"Espada Longa + Poção" },
-    ],
-    sit:"Rancor de Serylda obrigatório vs tanques | Serpentine Fang vs escudos | Lembrete Mortal vs regeneração",
-    f:["Flash","Teleporte"],
-    d:["EQ canhão: burst longa distância","Forma martelo: E knockback + W","Jogue ranged até poder all-in com martelo"] },
-
-  // ─────────────────────────── JUNGLE ─────────────────────────────────────
-
-  leesin: { nome:"Lee Sin", rota:"jungle",
-    runas:[
-      { quando:"assassinar carries, plays de impacto (maioria dos jogos)", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Perseguidor Sombrio", r3:"Caçador Voraz", s:"Precisão", s1:"Triunfo", s2:"Lenda: Tenacidade", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs time tanque ou precisa de mais sustain para lutar longo", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Dominação", s1:"Sabor do Sangue", s2:"Caçador Voraz", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — assassino com peel", items:["Faca de Dusk","Botas de Treino","Capa da Égide do Assassino","Lâmina da Noite Infinita","Guardião Imortal","Véu de Morte"], ini:"Machado de Pedra + Poção" },
-      { quando:"vs time tanque ou precisa de mais bruiser", items:["Força da Trindade","Botas de Treino","Sterak's Gage","Dança da Morte","Pele de Pedra de Gárgula","Guardião Imortal"], ini:"Machado de Pedra + Poção" },
-    ],
-    sit:"Serpentine Fang vs Lulu/Janna/Karma (escudos) | Guardião Imortal vs burst pesado | Lembrete Mortal vs tanques",
-    f:["Smite","Flash"],
-    d:["Insec: Flash/W2 ANTES do R para kickar para trás do time","Ward hop: jogue ward → W2 para flanquear","Power spike: level 3 com Q/W/E"] },
-
-  hecarim: { nome:"Hecarim", rota:"jungle",
-    runas:[
-      { quando:"engage rápido e fear em carries (maioria dos jogos)", p:"Feitiçaria", k:"Fase Rush", r1:"Manto de Nuvem", r2:"Celeridade", r3:"Coleta de Tempestades", s:"Determinação", s1:"Condicionamento", s2:"Inabalável", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-      { quando:"vs time frágil puro que você vai esmagar (3+ squishy)", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Determinação", s1:"Condicionamento", s2:"Inabalável", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — tank com engage", items:["Sunfire Aegis","Botas de Treino","Sterak's Gage","Força da Natureza","Pele de Pedra de Gárgula","Jak'Sho o Proteano"], ini:"Machado de Pedra + Poção" },
-      { quando:"vs full AP — precisa de resistência mágica", items:["Sunfire Aegis","Botas de Mercúrio","Força da Natureza","Jak'Sho o Proteano","Pele de Pedra de Gárgula","Coração Congelado"], ini:"Machado de Pedra + Poção" },
-    ],
-    sit:"Força da Natureza obrigatória vs 3+ AP | Coração Congelado vs AD pesado | Botas de Mercúrio vs CC pesado",
-    f:["Smite","Flash"],
-    d:["Phase Rush: proc com 3 habilidades = speed imparável","R fear em carries de longa distância","E: primeiro hit com charge máximo = mais damage"] },
-
-  amumu: { nome:"Amumu", rota:"jungle",
-    runas:[
-      { quando:"engage tank (maioria dos jogos)", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Condicionamento", r3:"Inabalável", s:"Inspiração", s1:"Capacete de Gladiador", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-      { quando:"vs time com muita cura/lifesteal e precisa de dano mágico", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Determinação", s1:"Condicionamento", s2:"Inabalável", sh:["Velocidade de Habilidade","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — tank engage", items:["Abraço de Sunfire","Botas de Mercúrio","Aço do Coração","Pele de Pedra de Gárgula","Espírito do Ancião","Colosso de Anima"], ini:"Machado de Pedra + Poção" },
-      { quando:"vs full AD ou muito dano físico", items:["Abraço de Sunfire","Botas de Treino","Coração Congelado","Pele de Pedra de Gárgula","Armadura de Espinhos","Jak'Sho o Proteano"], ini:"Machado de Pedra + Poção" },
-    ],
-    sit:"Armadura de Espinhos vs lifesteal pesado | Coração Congelado vs AD | Botas de Mercúrio vs CC/AP heavy",
-    f:["Smite","Flash"],
-    d:["Q tem 2 cargas — primeira gap close, segunda confirma","R imediato após Q em gank","Nunca inicie sozinho no teamfight"] },
-
-  kayn: { nome:"Kayn", rota:"jungle",
-    runas:[
-      { quando:"padrão para ambas as formas", p:"Dominação", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Determinação", s1:"Condicionamento", s2:"Inabalável", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"Blue Kayn (Darkin) — vs time com muita CC ou carries frágeis para duelar", items:["Lâmina Sanguessuga","Botas de Treino","Dança da Morte","Sterak's Gage","Machado Negro","Guardião Imortal"], ini:"Machado de Pedra + Poção" },
-      { quando:"Red Kayn (Shadow Assassin) — vs squishy pesado, 3+ carries para one-shot", items:["Dusk Blade","Botas de Treino","Véu da Noite","Dança da Morte","Sterak's Gage","Guardião Imortal"], ini:"Machado de Pedra + Poção" },
-    ],
-    sit:"Blue vs teamfight/tanques | Red vs squishy/carries | Serpentine Fang vs escudos (Lulu/Janna)",
-    f:["Smite","Flash"],
-    d:["Escolha forma baseado no time inimigo (Red=squishy, Blue=tanque/CC)","R Shadow Step: entre em inimigos — use para escape também","Farm ambos os tipos de inimigo para transformação rápida"] },
-
-  khazix: { nome:"Kha'Zix", rota:"jungle",
-    runas:[
-      { quando:"one-shot carries isolados (maioria dos jogos)", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Adaptativo","Adaptativo","Armadura"] },
-      { quando:"vs time com muita visão ou suporte com CC (Thresh/Leona) — precisa de mais kite", p:"Dominação", k:"Colheita Sombria", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Adaptativo","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — one-shot lethality", items:["Faca de Dusk","Botas de Treino","Véu da Noite","Dança da Morte","Sterak's Gage","Arco do Axioma"], ini:"Machado de Pedra + Poção" },
-      { quando:"vs escudos/peel pesado (Lulu/Janna/Karma suporte)", items:["Faca de Dusk","Botas de Treino","Serpentine Fang","Dança da Morte","Sterak's Gage","Guardião Imortal"], ini:"Machado de Pedra + Poção" },
-    ],
-    sit:"Serpentine Fang vs escudos obrigatório | Dança da Morte vs tanques | Evoluir Q primeiro",
-    f:["Smite","Flash"],
-    d:["Isolated target = damage bônus em Q — sempre 1v1","Evolve Q primeiro","R Void Assault: stealth para reset isolated"] },
-
-  graves: { nome:"Graves", rota:"jungle",
-    runas:[
-      { quando:"duelos e burst físico (maioria dos jogos)", p:"Precisão", k:"Pressione o Ataque", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Dominação", s1:"Sabor do Sangue", s2:"Caçador Ganancioso", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs time tankão — need dano sustentado", p:"Precisão", k:"Conquistador", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Dominação", s1:"Sabor do Sangue", s2:"Caçador Ganancioso", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — crit e ataque físico", items:["Flechatroz de Yun Tal","Botas de Berserker","Fio do Infinito","Espada do Rei Destruído","Lembrete Mortal","Guardião Mortal"], ini:"Machado de Pedra + Poção" },
-      { quando:"vs tanques — need lethality ou penetração", items:["Flechatroz de Yun Tal","Botas de Berserker","Rancor de Serylda","Lembrete Mortal","Fio do Infinito","Guardião Mortal"], ini:"Machado de Pedra + Poção" },
-    ],
-    sit:"Lembrete Mortal vs lifesteal/tanques | Guardião Mortal vs carries AP pesados | Rancor de Serylda vs armor stackers",
-    f:["Smite","Flash"],
-    d:["Q bounce na parede = mais damage","E Quickdraw: use DEFENSIVAMENTE","Close range: todos os pellets acertam = max DPS"] },
-
-  // ─────────────────────────── ADC ────────────────────────────────────────
-
-  jinx: { nome:"Jinx", rota:"adc",
-    runas:[
-      { quando:"fights longas com AS (maioria dos jogos)", p:"Precisão", k:"Ritmo Letal", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Determinação", s1:"Demolir", s2:"Inabalável", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs poke de engage pesado (Blitz/Leona) — precisa de burst rápido na lane", p:"Precisão", k:"Pressione o Ataque", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Determinação", s1:"Demolir", s2:"Inabalável", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — teamfight e AoE", items:["Kraken Slayer","Botas de Berserker","Furacão de Runaan","Espada do Rei Destruído","Fio do Infinito","Lembrete Mortal"], ini:"Doran Blade + Poção" },
-      { quando:"vs time full tanque — need % HP dano", items:["Kraken Slayer","Botas de Berserker","Fio do Infinito","Espada do Rei Destruído","Lembrete Mortal","Guardião Mortal"], ini:"Doran Blade + Poção" },
-    ],
-    sit:"Lembrete Mortal vs lifesteal/Soraka/Mundo | Guardião Mortal vs tanques AP | Furacão de Runaan para push e AoE teamfight",
-    f:["Flash","Cura"],
-    d:["Minigun para farm/duelos; Foguetes para teamfight/AoE","Passive reset com kill/assist — maximize no teamfight","Não troque levels 1-2 — spike começa com Kraken+Runaan"] },
-
-  caitlyn: { nome:"Caitlyn", rota:"adc",
-    runas:[
-      { quando:"bully e lane dominante (maioria dos jogos)", p:"Precisão", k:"Pressione o Ataque", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs engage pesado (Leona/Blitz/Nautilus) — precisa de escape", p:"Precisão", k:"Trabalho de Pé Ágil", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — crit e range bully", items:["Flechatroz de Yun Tal","Botas de Berserker","Rapidfire Cannon","Fio do Infinito","Lembrete Mortal","Guardião Mortal"], ini:"Espada Longa + Poção" },
-      { quando:"vs tanques — need Kraken e penetração", items:["Kraken Slayer","Botas de Berserker","Flechatroz de Yun Tal","Fio do Infinito","Lembrete Mortal","Guardião Mortal"], ini:"Espada Longa + Poção" },
-    ],
-    sit:"Lembrete Mortal vs lifesteal/Mundo/Aatrox | Guardião Mortal vs tanques AP | Rapidfire para range máxima em sieges",
-    f:["Flash","Cura"],
-    d:["Armadilhas em brushes + zone trap-shot (E)","Headshot proc com trap — trap first, then E","auto → Q → auto para proc headshot rápido"] },
-
-  ezreal: { nome:"Ezreal", rota:"adc",
-    runas:[
-      { quando:"poke e kiting (maioria dos jogos)", p:"Precisão", k:"Trabalho de Pé Ágil", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Inspiração", s1:"Calçados Mágicos", s2:"Perspicácia Cósmica", sh:["Adaptativo","Adaptativo","Armadura"] },
-      { quando:"vs engage pesado — precisa de mobility e disengage", p:"Feitiçaria", k:"Fase Rush", r1:"Manto de Nuvem", r2:"Celeridade", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Calçados Mágicos", s2:"Perspicácia Cósmica", sh:["Adaptativo","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — burst e kiting", items:["Manamune","Botas de Iônia","Trinity Force","Espada do Rei Destruído","Fio do Infinito","Guardião Mortal"], ini:"Doran Blade + Poção" },
-      { quando:"vs tanques — need penetração física", items:["Manamune","Botas de Iônia","Trinity Force","Rancor de Serylda","Lembrete Mortal","Guardião Mortal"], ini:"Doran Blade + Poção" },
-    ],
-    sit:"Lembrete Mortal vs lifesteal | Rancor de Serylda vs armor stackers | E defensivamente — nunca gaste em ataque",
-    f:["Flash","Cura"],
-    d:["Q Mystic Shot: hit reset todos os CDs","E Arcane Shift: use DEFENSIVAMENTE","R global: steal objectives ou execute"] },
-
-  jhin: { nome:"Jhin", rota:"adc",
-    runas:[
-      { quando:"kiting, poke e burst (maioria dos jogos)", p:"Precisão", k:"Trabalho de Pé Ágil", r1:"Presença de Espírito", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Coleta de Tempestades", sh:["Adaptativo","Adaptativo","Armadura"] },
-      { quando:"vs engage pesado — precisa de escape (Leona/Blitz/Alistar)", p:"Precisão", k:"Trabalho de Pé Ágil", r1:"Presença de Espírito", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Inspiração", s1:"Calçados Mágicos", s2:"Perspicácia Cósmica", sh:["Adaptativo","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — lethality e crit", items:["Garra do Caçador","Botas de Berserker","Rapidfire Cannon","Fio do Infinito","Lembrete Mortal","Coletor"], ini:"Doran Blade + Poção" },
-      { quando:"vs tanques — need armor pen", items:["Garra do Caçador","Botas de Berserker","Fio do Infinito","Lembrete Mortal","Guardião Mortal","Rancor de Serylda"], ini:"Doran Blade + Poção" },
-    ],
-    sit:"Lembrete Mortal vs lifesteal/Mundo/Soraka | Guardião Mortal vs tanques AP | 4° tiro nunca desperdice em minion",
-    f:["Flash","Cura"],
-    d:["4° tiro sempre no carry — nunca no minion","W root: precisa de ally touch/flower primeiro","R de ultra range — use de segurança máxima"] },
-
-  kaisa: { nome:"Kai'Sa", rota:"adc",
-    runas:[
-      { quando:"on-hit e burst (maioria dos jogos)", p:"Precisão", k:"Pressione o Ataque", r1:"Triunfo", r2:"Lenda: Alacrity", r3:"Golpe de Misericórdia", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Coleta de Tempestades", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-      { quando:"vs time engage pesado — precisa de burst rápido para eliminar antes de ser CCed", p:"Dominação", k:"Eletrocutar", r1:"Sabor do Sangue", r2:"Coleta de Globos Oculares", r3:"Caçador Ganancioso", s:"Precisão", s1:"Triunfo", s2:"Golpe de Misericórdia", sh:["Velocidade de Ataque","Adaptativo","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — on-hit burst", items:["Kraken Slayer","Botas de Berserker","Flechatroz de Yun Tal","Lâmina da Raiva de Guinsoo","Guardião Mortal","Lembrete Mortal"], ini:"Doran Blade + Poção" },
-      { quando:"vs tanques pesados — AS com % HP dano", items:["Kraken Slayer","Botas de Berserker","Lâmina da Raiva de Guinsoo","Espada do Rei Destruído","Lembrete Mortal","Guardião Mortal"], ini:"Doran Blade + Poção" },
-    ],
-    sit:"Lembrete Mortal vs lifesteal/cura pesada | Guardião Mortal vs AP | Void Staff vs MR stackers",
-    f:["Flash","Cura"],
-    d:["Passive 5 stacks = burst enorme no 4° hit","Q empowered em alvo solo: chegue perto","R dash em aliado que marcou inimigo"] },
-
-  // ─────────────────────────── SUPORTE ────────────────────────────────────
-
-  thresh: { nome:"Thresh", rota:"sup",
-    runas:[
-      { quando:"engage e CC (maioria dos jogos)", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Condicionamento", r3:"Inabalável", s:"Inspiração", s1:"Bola de Fogo Mágica", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-      { quando:"vs poke pesado de range — precisa de sustain para manter ADC vivo", p:"Determinação", k:"Guardião", r1:"Regeneração", r2:"Condicionamento", r3:"Revitalizar", s:"Inspiração", s1:"Bola de Fogo Mágica", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-    ],
-    builds:[
-      { quando:"padrão — engage tank", items:["Vigilância Locket","Botas de Mobilidade","Promessa do Cavaleiro","Fortaleza de Redenção","Colosso de Anima","Cetro de Cristal de Rylai"], ini:"Relic Shield + Poção" },
-      { quando:"vs pokeadores ou need mais CC/AP", items:["Vigilância Locket","Botas de Iônia","Promessa do Cavaleiro","Fortaleza de Redenção","Colosso de Anima","Chapéu Mortal de Rabadon"], ini:"Relic Shield + Poção" },
-    ],
-    sit:"Botas de Mobilidade padrão | Botas de Mercúrio vs CC muito pesado | Cetro de Rylai vs mobile carries",
-    f:["Flash","Ignite"],
-    d:["Q: jogue fora do range esperado — inimigos recuam","Lanterna (W): ângulos alternativos para carry","Farm almas: armor permanente a cada CS próximo"] },
-
-  leona: { nome:"Leona", rota:"sup",
-    runas:[
-      { quando:"engage e all-in pesado (maioria dos jogos)", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Escudo de Fort", r2:"Condicionamento", r3:"Inabalável", s:"Inspiração", s1:"Bola de Fogo Mágica", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-      { quando:"vs pokeadores pesados (Caitlyn/Jinx/Jhin) — precisa de mais shield/healing", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Escudo de Fort", r2:"Osso Revestido", r3:"Revitalizar", s:"Inspiração", s1:"Bola de Fogo Mágica", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Armadura"] },
-    ],
-    builds:[
-      { quando:"padrão — engage tank", items:["Vigilância Locket","Botas de Mercúrio","Promessa do Cavaleiro","Colosso de Anima","Pele de Pedra de Gárgula","Força da Natureza"], ini:"Steel Shoulderguards + Poção" },
-      { quando:"vs full AP ou muito CC mágico", items:["Vigilância Locket","Botas de Mercúrio","Força da Natureza","Promessa do Cavaleiro","Jak'Sho o Proteano","Pele de Pedra de Gárgula"], ini:"Steel Shoulderguards + Poção" },
-    ],
-    sit:"Botas de Mercúrio obrigatórias vs AP heavy | Força da Natureza vs 3+ AP | Armadura de Espinhos vs lifesteal",
-    f:["Flash","Ignite"],
-    d:["Level 2 all-in: E → Q → auto = kill","Nunca use E sem Q carregado — você fica preso","R em grupo: stun AoE, não 1v1"] },
-
-  blitzcrank: { nome:"Blitzcrank", rota:"sup",
-    runas:[
-      { quando:"engage e pick pesado (maioria dos jogos)", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Condicionamento", r3:"Inabalável", s:"Inspiração", s1:"Bola de Fogo Mágica", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-    ],
-    builds:[
-      { quando:"padrão", items:["Vigilância Locket","Botas de Treino","Aço do Coração","Pele de Pedra de Gárgula","Colosso de Anima","Fortaleza de Redenção"], ini:"Steel Shoulderguards + Poção" },
-      { quando:"vs full AP ou muito dano mágico", items:["Vigilância Locket","Botas de Mercúrio","Força da Natureza","Pele de Pedra de Gárgula","Colosso de Anima","Fortaleza de Redenção"], ini:"Steel Shoulderguards + Poção" },
-    ],
-    sit:"Botas de Mercúrio vs AP/CC pesado | Força da Natureza vs 3+ AP | Armadura de Espinhos vs lifesteal",
-    f:["Flash","Ignite"],
-    d:["Combo: Q (Gancho) → E (Soco) imediatamente → auto","W Overdrive ANTES do Q para chegar no range","Jogue brushes para forçar o gancho","Nunca use E primeiro — perde o knockup"] },
-
-  nautilus: { nome:"Nautilus", rota:"sup",
-    runas:[
-      { quando:"engage e CC chain (maioria dos jogos)", p:"Determinação", k:"Aperto dos Mortos-Vivos", r1:"Demolir", r2:"Condicionamento", r3:"Inabalável", s:"Inspiração", s1:"Perspicácia Cósmica", s2:"Calçados Mágicos", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-    ],
-    builds:[
-      { quando:"padrão", items:["Vigilância Locket","Botas de Mercúrio","Promessa do Cavaleiro","Colosso de Anima","Força da Natureza","Pele de Pedra de Gárgula"], ini:"Steel Shoulderguards + Poção" },
-      { quando:"vs full AD", items:["Vigilância Locket","Botas de Treino","Coração Congelado","Promessa do Cavaleiro","Armadura de Espinhos","Pele de Pedra de Gárgula"], ini:"Steel Shoulderguards + Poção" },
-    ],
-    sit:"Botas de Mercúrio vs AP heavy | Coração Congelado vs AD | Armadura de Espinhos vs lifesteal",
-    f:["Flash","Ignite"],
-    d:["Q hook + Passive auto root = CC chain","R knockup AoE em linha","4 CC disponíveis: Q root/passive root/E root/R knockup"] },
-
-  lulu: { nome:"Lulu", rota:"sup",
-    runas:[
-      { quando:"proteger carry e buffs (maioria dos jogos)", p:"Feitiçaria", k:"Invocar Aery", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-      { quando:"vs engage pesado — precisa de mais defesas para você mesma", p:"Determinação", k:"Guardião", r1:"Regeneração", r2:"Condicionamento", r3:"Revitalizar", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-    ],
-    builds:[
-      { quando:"padrão — enchanter", items:["Véu de Ardor","Botas de Iônia","Arco da Ardente","Arco Lunar Redentor","Promessa do Cavaleiro","Fortaleza de Redenção"], ini:"Relic Shield + Poção" },
-      { quando:"vs dive — need mais tankiness para sobreviver e proteger", items:["Vigilância Locket","Botas de Mobilidade","Promessa do Cavaleiro","Arco da Ardente","Fortaleza de Redenção","Colosso de Anima"], ini:"Relic Shield + Poção" },
-    ],
-    sit:"Promessa do Cavaleiro obrigatória vs dive | W polymorph em carry inimigo no engage | R em carry ALIADO vs dive",
-    f:["Flash","Ignite"],
-    d:["Polymorph (W) em carry inimigo no engage","E shield: em carry ANTES de CC inimigo","R: knockup + HP enorme em carry — anti-dive perfeito"] },
-
-  soraka: { nome:"Soraka", rota:"sup",
-    runas:[
-      { quando:"healing máximo e sustain (maioria dos jogos)", p:"Feitiçaria", k:"Invocar Aery", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Determinação", s1:"Fonte de Vida", s2:"Revitalizar", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-      { quando:"vs poke pesado — precisa de mais sustain para si mesma", p:"Determinação", k:"Guardião", r1:"Regeneração", r2:"Condicionamento", r3:"Revitalizar", s:"Feitiçaria", s1:"Manto de Nuvem", s2:"Transcendência", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-    ],
-    builds:[
-      { quando:"padrão — heal máximo", items:["Caduceu de Rabadon","Botas de Iônia","Arco Lunar Redentor","Fortaleza de Redenção","Sceptro de Cristal de Rylai","Arco da Ardente"], ini:"Doran's Ring + Poção" },
-      { quando:"vs dive — precisa sobreviver engages", items:["Caduceu de Rabadon","Botas de Mobilidade","Promessa do Cavaleiro","Arco Lunar Redentor","Fortaleza de Redenção","Colosso de Anima"], ini:"Doran's Ring + Poção" },
-    ],
-    sit:"Morellonomicon INIMIGO vs você — buy Redemption/Ardent early | Promessa do Cavaleiro vs dive | Caduceu de Rabadon primeiro sempre",
-    f:["Flash","Ignite"],
-    d:["Q hit → use W para mana de heal grátis","R global quando aliado dying em QUALQUER lane","E silence zone: interrupt dive/channeling"] },
-
-  nami: { nome:"Nami", rota:"sup",
-    runas:[
-      { quando:"poke e sustain (maioria dos jogos)", p:"Feitiçaria", k:"Invocar Aery", r1:"Manto de Nuvem", r2:"Transcendência", r3:"Coleta de Tempestades", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-      { quando:"vs engage pesado (Leona/Blitz/Alistar) — precisa de mais defesa", p:"Determinação", k:"Guardião", r1:"Regeneração", r2:"Condicionamento", r3:"Revitalizar", s:"Inspiração", s1:"Entrega de Biscoitos", s2:"Perspicácia Cósmica", sh:["Velocidade de Habilidade","Armadura","Resistência Mágica"] },
-    ],
-    builds:[
-      { quando:"padrão — enchanter", items:["Véu de Ardor","Botas de Iônia","Arco da Ardente","Arco Lunar Redentor","Fortaleza de Redenção","Sceptro de Cristal de Rylai"], ini:"Relic Shield + Poção" },
-      { quando:"vs dive — need Locket + tankiness", items:["Vigilância Locket","Botas de Mobilidade","Arco da Ardente","Promessa do Cavaleiro","Fortaleza de Redenção","Arco Lunar Redentor"], ini:"Relic Shield + Poção" },
-    ],
-    sit:"Promessa do Cavaleiro vs dive | Sceptro de Rylai vs mobile carries | E: empowered autos do ADC = slow",
-    f:["Flash","Ignite"],
-    d:["Q bubble: lead do target (não onde está, onde vai)","E empowered autos do ADC com slow","R: use de flank para max chain knockup"] },
+// ═══════════════════════════════════════════════════════════════════════
+// CACHE
+// ═══════════════════════════════════════════════════════════════════════
+const CACHE = new Map();
+const TTL = {
+  patch:   6  * 3600_000,
+  dd:      12 * 3600_000,
+  lol:     2  * 3600_000,
+  riot:    4  * 3600_000,
 };
+function cacheGet(k)       { const e = CACHE.get(k); return e && Date.now()-e.ts < e.ttl ? e.v : null; }
+function cacheSet(k, v, t) { CACHE.set(k, { v, ts: Date.now(), ttl: t }); return v; }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// REGRAS ADAPTATIVAS GLOBAIS — aplica a QUALQUER campeão
-// ═══════════════════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════════════════
-// CLASSE DE CADA CAMPEÃO — determina quais itens situacionais fazem sentido
-// ═══════════════════════════════════════════════════════════════════════════
-const CLASSE = {
-  // AD carries (dano físico, itens de crit/AS — NUNCA AP)
-  adc: ["jinx","caitlyn","jhin","ezreal","draven","varus","ashe","sivir","tristana",
-        "twitch","kogmaw","xayah","kalista","aphelios","samira","nilah","zeri","smolder","graves","quinn"],
-  // On-hit ADC (similar a adc mas com Guinsoo/Kraken)
-  adc_onhit: ["kaisa","varus","kog maw","kogmaw","vayne"],
-  // Magos (dano mágico — NUNCA itens AD como Lembrete Mortal)
-  mago: ["lux","syndra","orianna","veigar","ahri","zoe","vel","xerath","anivia","annie",
-         "malzahar","heimerdinger","neeko","ziggs","azir","viktor","cassiopeia","taliyah",
-         "aurelionsol","hwei","ryze","lissandra","swain","brand","seraphine","karma",
-         "morgana","zyra","sona","zilean"],
-  // Assassinos AP (dano mágico mas burst — itens como Zhonya, nunca Lembrete Mortal)
-  assassino_ap: ["fizz","ekko","katarina","akali","diana","evelynn","leblanc","qiyana",
-                 "sylas","shaco","zed_ap","talon_ap"],
-  // Assassinos AD (dano físico — NUNCA Morellonomicon)
-  assassino_ad: ["zed","talon","khazix","rengar","nocturne","naafiri","kayn_red","akshan"],
-  // Lutadores AD (bruisers físicos — anti-cura = Faca Chempunk ou Thornmail, NUNCA Morellonomicon)
-  lutador: ["darius","garen","irelia","camille","fiora","jax","riven","renekton","tryndamere",
-            "ambessa","aatrox","volibear","warwick","wukong","xinzhao","vi","jarvaniv",
-            "kled","olaf","urgot","sett","yorick","illaoi","mordekaiser","gwen",
-            "trundle","leesin","briar","belveth","nilah","yasuo","yone"],
-  // Magos/Lutadores top (mistura — verificar caso a caso)
-  mago_top: ["gwen","kennen","rumble","teemo","heimerdinger","singed","mordekaiser","swain"],
-  // Tanks (compram armor/MR — anti-cura = Thornmail, NUNCA Morellonomicon)
-  tank: ["malphite","maokai","ornn","chogath","sion","nautilus","leona","rell","amumu",
-         "zac","sejuani","poppy","rammus","hecarim","udyr","nunu","skarner",
-         "drmundo","nasus","tahm","volibear","garen","alistar","braum","blitzcrank"],
-  // Enchanters (suporte heal/shield — itens de suporte, NUNCA Morellonomicon)
-  enchanter: ["lulu","soraka","nami","janna","karma","sona","yuumi","milio","seraphine",
-              "zilean","renata","bard","ivern"],
-  // Suportes tank/engage
-  sup_tank: ["thresh","leona","nautilus","blitzcrank","alistar","braum","rell","rakan",
-             "pyke","morgana","brand","zyra","swain"],
+// ═══════════════════════════════════════════════════════════════════════
+// DATA DRAGON
+// ═══════════════════════════════════════════════════════════════════════
+async function getPatch() {
+  const c = cacheGet("patch");
+  if (c) return c;
+  try {
+    const r = await axios.get("https://ddragon.leagueoflegends.com/api/versions.json", { timeout: 6000 });
+    return cacheSet("patch", r.data[0], TTL.patch);
+  } catch { return cacheGet("patch") || "15.1.1"; }
+}
+
+async function getDDItems() {
+  const c = cacheGet("items");
+  if (c) return c;
+  try {
+    const patch = await getPatch();
+    const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/item.json`, { timeout: 8000 });
+    const map = {};
+    for (const [id, it] of Object.entries(r.data.data || {})) map[id] = it.name;
+    return cacheSet("items", map, TTL.dd);
+  } catch { return cacheGet("items") || {}; }
+}
+
+async function getDDRunes() {
+  const c = cacheGet("runes");
+  if (c) return c;
+  try {
+    const patch = await getPatch();
+    const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/runesReforged.json`, { timeout: 8000 });
+    const map = {};
+    for (const tree of (r.data || [])) {
+      map[tree.id] = tree.name;
+      for (const row of (tree.slots || []))
+        for (const rune of (row.runes || [])) map[rune.id] = rune.name;
+    }
+    return cacheSet("runes", map, TTL.dd);
+  } catch { return cacheGet("runes") || {}; }
+}
+
+async function getDDChampions() {
+  const c = cacheGet("champs_dd");
+  if (c) return c;
+  try {
+    const patch = await getPatch();
+    const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/champion.json`, { timeout: 8000 });
+    // map: "lesin" → "LeeSin", "chogath" → "Chogath", etc.
+    const map = {};
+    for (const [key, data] of Object.entries(r.data.data || {})) {
+      map[key.toLowerCase()] = key;
+      map[data.name.toLowerCase()] = key;
+    }
+    return cacheSet("champs_dd", map, TTL.dd);
+  } catch { return cacheGet("champs_dd") || {}; }
+}
+
+async function toDDKey(name) {
+  if (!name) return "";
+  const champMap = await getDDChampions();
+  const normalized = name.toLowerCase()
+    .replace(/['\s]+/g, "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  // tenta direto, depois normalizado, depois parcial
+  return champMap[name.toLowerCase()] ||
+         champMap[normalized] ||
+         Object.keys(champMap).find(k => k.replace(/['\s]/g,"") === normalized) && champMap[Object.keys(champMap).find(k => k.replace(/['\s]/g,"") === normalized)] ||
+         name.charAt(0).toUpperCase() + name.slice(1).toLowerCase().replace(/\s+/g,"");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// LOLALYTICS — 3 tipos de fetch:
+//   1. base()   → build + runas gerais do campeão na rota
+//   2. vs()     → WR vs cada inimigo específico
+//   3. with()   → WR com aliados (sinergia)
+// ═══════════════════════════════════════════════════════════════════════
+const LL_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0",
+  "Accept": "application/json, */*",
+  "Referer": "https://lolalytics.com/",
 };
+const LANE_MAP = { top:"top", jungle:"jungle", mid:"mid", adc:"adc", bot:"adc", sup:"support", support:"support", suporte:"support" };
 
-// Retorna a classe do campeão
-function getClasse(champName) {
-  if (!champName) return null;
-  const n = champName.toLowerCase().replace(/['\s]+/g,"").normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-  for (const [classe, lista] of Object.entries(CLASSE)) {
-    if (lista.some(x => n.includes(x) || x.includes(n))) return classe;
+async function llFetch(url) {
+  try {
+    const r = await axios.get(url, { timeout: 8000, headers: LL_HEADERS });
+    if (r.status === 200 && r.data && typeof r.data === "object") return r.data;
+  } catch (e) { console.log("[LL fail]", url.slice(0,90), e.message?.slice(0,60)); }
+  return null;
+}
+
+async function lolalyticsBase(champName, role) {
+  const ck = `ll_base:${champName}:${role}`;
+  const cached = cacheGet(ck);
+  if (cached) return cached;
+
+  const ddKey = await toDDKey(champName);
+  const lane  = LANE_MAP[role?.toLowerCase()] || "mid";
+  const patch = await getPatch();
+  const p2    = patch.split(".").slice(0,2).join("_");
+
+  const urls = [
+    `https://lolalytics.com/api/tier1/?lane=${lane}&tier=platinum_plus&patch=${p2}&region=all&queue=ranked_solo_5x5&c=${ddKey}`,
+    `https://lolalytics.com/api/tier1/?lane=${lane}&tier=platinum_plus&patch=&region=all&queue=ranked_solo_5x5&c=${ddKey}`,
+    `https://lolalytics.com/api/tier1/?lane=${lane}&tier=gold_plus&patch=&region=all&queue=ranked_solo_5x5&c=${ddKey}`,
+  ];
+
+  for (const url of urls) {
+    const d = await llFetch(url);
+    if (d) {
+      const result = await parseLLBase(d, ddKey, lane);
+      if (result.valid) return cacheSet(ck, result, TTL.lol);
+    }
   }
   return null;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// RESOLVER DE ITENS SITUACIONAIS — baseado em classe + time inimigo
-// Calcula server-side para garantir que a IA não erre por ignorância de classe
-// ═══════════════════════════════════════════════════════════════════════════
-function resolverSituacionais(classe, enemies, allies) {
-  const e = (enemies||"").toLowerCase();
-  const situacionais = [];
-  const alertas = [];
+async function lolalyticsVs(champName, enemyName, role) {
+  const ddKey = await toDDKey(champName);
+  const ddEnemy = await toDDKey(enemyName);
+  const lane = LANE_MAP[role?.toLowerCase()] || "mid";
+  const ck = `ll_vs:${ddKey}:${ddEnemy}:${lane}`;
+  const cached = cacheGet(ck);
+  if (cached) return cached;
 
-  // ── detectar ameaças no time inimigo ──
-  const temCura = /soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|irelia|sylas|swain|vladimir|olaf|gwen/.test(e);
-  const temTanques = (e.match(/malphite|maokai|ornn|chogath|sion|zac|sejuani|poppy|rammus|leona|nautilus|blitzcrank|alistar|thresh|amumu|garen|nasus|drmundo/g)||[]).length >= 1;
-  const muitosTanques = (e.match(/malphite|maokai|ornn|chogath|sion|zac|sejuani|poppy|rammus|leona|nautilus|blitzcrank|alistar|thresh|amumu|garen|nasus|drmundo/g)||[]).length >= 2;
-  const temEscudos = /lulu|janna|karma|renata|seraphine|shen|orianna/.test(e);
-  const temAssassinoAD = /zed|talon|rengar|khazix|kha.zix|nocturne|naafiri/.test(e);
-  const temAssassinoAP = /fizz|leblanc|akali|diana|evelynn|katarina/.test(e);
-  const temAPPesado = /malzahar|veigar|syndra|lux|orianna|xerath|vel.koz|anivia|annie/.test(e);
-  const temCCLongo = /malzahar|nautilus|blitzcrank|leona|amumu|morgana|alistar/.test(e);
-  const temFullAD = !/syndra|lux|orianna|xerath|vel|annie|veigar|malzahar|anivia|azir|cassio|aurelion|viktor|ziggs|hwei|ryze|zoe|neeko|rumble|mordekaiser|karma|brand|zyra|sona/.test(e);
-  const temFullAP = !/darius|garen|zed|talon|jinx|caitlyn|jhin|ezreal|draven|graves|irelia|jax|riven|fiora|aatrox|ambessa|olaf|renekton|wukong|xinzhao|vi|jarvan|tryndamere|yasuo|yone|urgot|sett/.test(e);
+  const url = `https://lolalytics.com/api/vs1/?lane=${lane}&tier=platinum_plus&patch=&region=all&queue=ranked_solo_5x5&c=${ddKey}&e=${ddEnemy}`;
+  const d = await llFetch(url);
+  if (!d) return null;
 
-  // ── regras por CLASSE ──
-  if (["adc","adc_onhit"].includes(classe)) {
-    // ADCs: dano físico — anti-cura é SEMPRE Lembrete Mortal (nunca Morellonomicon)
-    if (temCura)
-      situacionais.push("⚠️ ANTI-CURA: **Lembrete Mortal** (slot 4-5) — inimigos com cura pesada. NUNCA Morellonomicon pois você é AD");
-    if (muitosTanques)
-      situacionais.push("🛡️ ANTI-TANQUE: **Kraken Slayer** (se ainda não tem) + **Lembrete Mortal** para % HP dano");
-    if (temEscudos)
-      situacionais.push("🔰 ANTI-ESCUDO: **Serpentine Fang** (slot 3-4) vs Lulu/Janna/Karma no time inimigo");
-    if (temAPPesado || temCCLongo)
-      situacionais.push("🔵 VS AP PESADO: **Guardião Mortal** (slot 5-6) para resistência mágica");
-    if (temFullAP)
-      situacionais.push("🔵 TIME FULL AP: **Mercurial Scimitar** para tenacidade + MR + cleanse de CC");
-    if (temAssassinoAD)
-      situacionais.push("🗡️ VS ASSASSINO AD (Zed/Talon): jogue atrás do time, **Guardião Mortal** se levando muito burst");
+  // extrai WR vs inimigo
+  const wr = d.header?.winRate || d.winRate || d.wr || null;
+  const n  = d.header?.n || d.n || 0;
+  if (!wr) return null;
+  const result = { valid: true, enemy: ddEnemy, winRate: Math.round(parseFloat(wr)*100)/100, games: n };
+  return cacheSet(ck, result, TTL.lol);
+}
 
-  } else if (["mago","assassino_ap","mago_top"].includes(classe)) {
-    // Magos/Assassinos AP: dano mágico — anti-cura é SEMPRE Morellonomicon (nunca Lembrete Mortal)
-    if (temCura)
-      situacionais.push("⚠️ ANTI-CURA: **Morellonomicon** (slot 3-4) — reduz cura de Soraka/Mundo/Aatrox. NUNCA Lembrete Mortal pois você é AP");
-    if (muitosTanques)
-      situacionais.push("🛡️ ANTI-TANQUE: **Bastão do Vazio** obrigatório vs 2+ tanques (penetração mágica %)");
-    if (temEscudos)
-      situacionais.push("🔰 ANTI-ESCUDO: **Anathema's Chains** não se aplica para magos — foco em dano raw com Bastão do Vazio");
-    if (temAssassinoAD)
-      situacionais.push("🗡️ VS ASSASSINO AD (Zed/Talon/Rengar): **Ampulheta de Zhonya** obrigatória, compre no 3° slot");
-    if (temAPPesado || temCCLongo)
-      situacionais.push("🔵 VS AP CC PESADO: **Véu da Banshee** (slot 4-5) bloqueia a primeira habilidade inimiga");
-    if (temFullAD)
-      situacionais.push("⚔️ TIME FULL AD: **Ampulheta de Zhonya** early pois o burst físico vai te matar");
+async function lolalyticsComp(champName, role, allies, enemies) {
+  // Busca WR vs cada inimigo e com cada aliado em paralelo
+  const allChamps = [...(allies||[]), ...(enemies||[])].filter(Boolean);
+  if (!allChamps.length) return { vsData: [], withData: [] };
 
-  } else if (["assassino_ad"].includes(classe)) {
-    // Assassinos AD: físico — anti-cura = Faca Chempunk (NUNCA Morellonomicon)
-    if (temCura)
-      situacionais.push("⚠️ ANTI-CURA: **Faca Chempunk Serrilhada** ou **Lembrete Mortal** — você é AD, NUNCA Morellonomicon");
-    if (muitosTanques)
-      situacionais.push("🛡️ ANTI-TANQUE: **Rancor de Serylda** para slow + armor pen vs tanques");
-    if (temEscudos)
-      situacionais.push("🔰 ANTI-ESCUDO: **Serpentine Fang** quebra shields de Lulu/Janna/Karma");
-    if (temAPPesado || temCCLongo)
-      situacionais.push("🔵 VS AP PESADO: **Véu de Morte** (para Zed) ou **Cimitarra Mercurial** para cleanse");
-    if (temCCLongo)
-      situacionais.push("🔵 VS CC LONGO: **Cimitarra Mercurial** para limpar suppressão/root");
+  const ddKey = await toDDKey(champName);
+  const lane  = LANE_MAP[role?.toLowerCase()] || "mid";
 
-  } else if (["lutador"].includes(classe)) {
-    // Lutadores AD/mistura: anti-cura = Faca Chempunk ou Armadura de Espinhos
-    if (temCura)
-      situacionais.push("⚠️ ANTI-CURA: **Faca Chempunk Serrilhada** (slot 2-3) ou **Armadura de Espinhos** se você é tank — NUNCA Morellonomicon");
-    if (muitosTanques)
-      situacionais.push("🛡️ ANTI-TANQUE: **Lembrete Mortal** se você ataca de longe, **Faca Chempunk** se melee");
-    if (temEscudos)
-      situacionais.push("🔰 ANTI-ESCUDO: **Serpentine Fang** vs Lulu/Janna/Karma suporte");
-    if (temAPPesado)
-      situacionais.push("🔵 VS AP PESADO: **Força da Natureza** (slot 3-4) + **Botas de Mercúrio**");
-    if (temCCLongo)
-      situacionais.push("🔵 VS CC LONGO: **Cimitarra Mercurial** para cleanse ou **Botas de Mercúrio** para tenacidade");
+  const vsResults   = [];
+  const withResults = [];
 
-  } else if (["tank"].includes(classe)) {
-    // Tanks: anti-cura = Armadura de Espinhos (NUNCA Morellonomicon ou Lembrete Mortal)
-    if (temCura)
-      situacionais.push("⚠️ ANTI-CURA: **Armadura de Espinhos** — você é tank, este item reduz cura de quem te ataca. NUNCA Morellonomicon ou Lembrete Mortal");
-    if (temFullAP)
-      situacionais.push("🔵 TIME FULL AP: **Força da Natureza** + **Botas de Mercúrio** obrigatórios");
-    if (temFullAD)
-      situacionais.push("⚔️ TIME FULL AD: **Coração Congelado** + **Armadura de Espinhos** para armor máximo");
-    if (temAPPesado)
-      situacionais.push("🔵 VS MAGO PESADO: **Força da Natureza** + **Véu da Banshee** para sobreviver burst mágico");
+  await Promise.all(allChamps.map(async (c) => {
+    const ddC = await toDDKey(c);
+    if (!ddC) return;
 
-  } else if (["enchanter","sup_tank"].includes(classe)) {
-    // Suportes
-    if (temCura && classe === "sup_tank")
-      situacionais.push("⚠️ ANTI-CURA: **Executioner's Calling** (item barato) → upgradar para **Mortal Reminder** ou **Serpentine Fang** se AD suporte");
-    if (muitosTanques)
-      situacionais.push("🛡️ ANTI-TANQUE: **Fortaleza de Redenção** + **Sceptro de Rylai** para slow/damage extra");
-    if (temAssassinoAD && classe === "enchanter")
-      situacionais.push("🗡️ VS ASSASSINO: **Vigilância Locket** obrigatório para proteger você e o ADC");
+    // vs inimigos
+    if ((enemies||[]).some(e => e.toLowerCase().includes(c.toLowerCase()))) {
+      const url = `https://lolalytics.com/api/vs1/?lane=${lane}&tier=platinum_plus&patch=&region=all&queue=ranked_solo_5x5&c=${ddKey}&e=${ddC}`;
+      const d = await llFetch(url);
+      if (d) {
+        const wr = d.header?.winRate || d.winRate || d.wr;
+        if (wr) vsResults.push({ champ: ddC, wr: Math.round(parseFloat(wr)*100)/100, games: d.header?.n || d.n || 0 });
+      }
+    }
+
+    // with aliados
+    if ((allies||[]).some(a => a.toLowerCase().includes(c.toLowerCase()))) {
+      const url = `https://lolalytics.com/api/champion/?lane=${lane}&tier=platinum_plus&patch=&region=all&queue=ranked_solo_5x5&c=${ddKey}&e=${ddC}&type=duo`;
+      const d = await llFetch(url);
+      if (d) {
+        const wr = d.header?.winRate || d.winRate || d.wr;
+        if (wr) withResults.push({ champ: ddC, wr: Math.round(parseFloat(wr)*100)/100, games: d.header?.n || d.n || 0 });
+      }
+    }
+  }));
+
+  return { vsData: vsResults, withData: withResults };
+}
+
+async function parseLLBase(raw, champName, lane) {
+  if (!raw || typeof raw !== "object") return { valid: false };
+  const itemsMap = await getDDItems();
+  const runesMap = await getDDRunes();
+  const res = { valid: false, fonte: "lolalytics", champion: champName, lane, games: 0, builds: [], runas: [], skillOrder: "" };
+
+  const header = raw.header || raw.Header || {};
+  res.games = header.n || header.count || raw.n || 0;
+
+  // ── BUILDS ──
+  // lolalytics retorna itens como "3152_3020_3157" → ids separados por _
+  const itemData = raw.build?.item || raw.item || raw.items || {};
+  if (typeof itemData === "object" && !Array.isArray(itemData)) {
+    const entries = Object.entries(itemData)
+      .filter(([k, v]) => typeof v === "object" && (v.n || 0) > 30)
+      .map(([k, v]) => {
+        const ids    = k.split("_").filter(Boolean);
+        const names  = ids.map(id => itemsMap[id]).filter(Boolean);
+        const wr     = v.wins ? Math.round((v.wins / v.n) * 100) : (v.wr ? Math.round(v.wr) : 0);
+        const pr     = res.games > 0 ? Math.round((v.n / res.games) * 100) : 0;
+        return { names, wr, pr, n: v.n };
+      })
+      .filter(x => x.names.length >= 3)
+      .sort((a, b) => (b.pr * 0.5 + b.wr * 0.5) - (a.pr * 0.5 + a.wr * 0.5));
+
+    res.builds = entries.slice(0, 3).map((x, i) => ({
+      items: x.names,
+      winRate: x.wr,
+      pickRate: x.pr,
+      label: i === 0 ? "mais popular" : i === 1 ? "alternativa" : "situacional",
+    }));
   }
 
-  // ── alertas de runa baseados na composição ──
-  if (muitosTanques && !["tank","enchanter","sup_tank"].includes(classe))
-    alertas.push("📌 RUNA: Prefira **Conquistador** sobre Eletrocutar vs 2+ tanques (dano sustentado > burst)");
-  if (temCCLongo && !["tank"].includes(classe))
-    alertas.push("📌 RUNA SECUNDÁRIA: Considere **Lenda: Tenacidade** vs muito CC inimigo");
-  if (temAssassinoAD && ["mago","assassino_ap"].includes(classe))
-    alertas.push("📌 RUNA: Considere **Manto de Nuvem** (secundária) vs assassino AD para 10s de invulnerabilidade");
+  // ── RUNAS ──
+  const runaData = raw.rune || raw.runes || raw.Runes || {};
+  const keystoneData = runaData.keystone || {};
+  if (typeof keystoneData === "object" && !Array.isArray(keystoneData)) {
+    const ks = Object.entries(keystoneData)
+      .filter(([, v]) => v && typeof v === "object" && (v.n || 0) > 10)
+      .map(([id, v]) => ({
+        id, name: runesMap[id] || `#${id}`,
+        n: v.n || 0,
+        wr: v.wins ? Math.round((v.wins / v.n) * 100) : (v.wr ? Math.round(v.wr) : 0)
+      }))
+      .sort((a, b) => b.n - a.n);
 
-  return { situacionais, alertas };
+    if (ks.length > 0) {
+      // tenta pegar a árvore primária
+      const primaryTree = raw.rune?.primary || {};
+      const primaryId   = Object.entries(primaryTree)
+        .filter(([, v]) => v && v.n > 10)
+        .sort(([, a], [, b]) => (b.n||0) - (a.n||0))[0]?.[0];
+
+      const secondaryTree = raw.rune?.secondary || {};
+      const secondaryId   = Object.entries(secondaryTree)
+        .filter(([, v]) => v && v.n > 10)
+        .sort(([, a], [, b]) => (b.n||0) - (a.n||0))[0]?.[0];
+
+      res.runas = ks.slice(0, 2).map((k, i) => ({
+        keystone: k.name,
+        primary:  runesMap[primaryId]   || "",
+        secondary: runesMap[secondaryId] || "",
+        winRate: k.wr,
+        pickRate: res.games > 0 ? Math.round((k.n / res.games) * 100) : 0,
+        label: i === 0 ? "mais popular" : "alternativa",
+      }));
+    }
+  }
+
+  // ── SKILL ORDER ──
+  const skills = raw.skills || raw.skill || {};
+  if (typeof skills === "object") {
+    const orders = Object.entries(skills)
+      .filter(([, v]) => v && typeof v === "object" && (v.n||0) > 20)
+      .sort(([, a], [, b]) => (b.n||0) - (a.n||0));
+    if (orders[0]) res.skillOrder = orders[0][0]; // ex: "QWEQRQEQRQERQERE"
+  }
+
+  res.valid = res.builds.length > 0 || res.runas.length > 0;
+  return res;
 }
 
-// Aliases de busca
-const ALIASES = {
-  "lee sin":"leesin","lee":"leesin","kata":"katarina","blitz":"blitzcrank",
-  "cait":"caitlyn","yas":"yasuo","mf":"misfortune","miss fortune":"misfortune",
-  "tf":"twistedfate","twisted fate":"twistedfate","j4":"jarvaniv","jarvan":"jarvaniv",
-  "xin":"xinzhao","xin zhao":"xinzhao","kog":"kogmaw","kog maw":"kogmaw",
-  "vel koz":"vel","velkoz":"vel","aurelion":"aurelionsol","aurelion sol":"aurelionsol",
-  "dr mundo":"drmundo","dr. mundo":"drmundo","kha":"khazix","kha zix":"khazix",
-  "rek sai":"reksai","k sante":"ksante","kai sa":"kaisa","tahm kench":"tahm",
-  "bel veth":"belveth","cho gath":"chogath","cho":"chogath","renata glasc":"renata",
-  "twisted":"twistedfate","master yi":"masteryi","yi":"masteryi","ww":"warwick",
-  "heimer":"heimerdinger","dinger":"heimerdinger","karth":"karthus","nunu":"nunu",
-  "leona":"leona","thresh":"thresh","jinx":"jinx","ahri":"ahri","zed":"zed",
-  "katarina":"katarina","syndra":"syndra","veigar":"veigar","ekko":"ekko",
-  "yasuo":"yasuo","fizz":"fizz","caitlyn":"caitlyn","ezreal":"ezreal","jhin":"jhin",
-  "kaisa":"kaisa","leesin":"leesin","amumu":"amumu","graves":"graves",
-  "khazix":"khazix","hecarim":"hecarim","kayn":"kayn","lulu":"lulu",
-  "soraka":"soraka","nami":"nami","blitzcrank":"blitzcrank","nautilus":"nautilus",
+// ═══════════════════════════════════════════════════════════════════════
+// RIOT API — Challenger OTPs
+// Requer RIOT_KEY env var. Região padrão: BR1
+// ═══════════════════════════════════════════════════════════════════════
+async function riotFetch(url, region = "br1") {
+  if (!RIOT_KEY) return null;
+  const base = region.includes("americas") ? "https://americas.api.riotgames.com" : `https://${region}.api.riotgames.com`;
+  try {
+    const r = await axios.get(base + url, {
+      timeout: 8000,
+      headers: { "X-Riot-Token": RIOT_KEY },
+    });
+    return r.data;
+  } catch (e) {
+    if (e.response?.status === 403) console.log("[Riot] API key inválida ou expirada");
+    else if (e.response?.status === 429) console.log("[Riot] Rate limit atingido");
+    else console.log("[Riot fail]", url.slice(0,60), e.message?.slice(0,40));
+    return null;
+  }
+}
+
+async function riotChallengerOTPs(champName, role) {
+  if (!RIOT_KEY) return null;
+  const ck = `riot_otp:${champName}:${role}`;
+  const cached = cacheGet(ck);
+  if (cached) return cached;
+
+  // 1. Busca champion ID pelo nome
+  const champMap = await getDDChampions();
+  const ddKey    = champMap[champName.toLowerCase()] || champName;
+  const patch    = await getPatch();
+  let champId    = null;
+
+  try {
+    const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/champion/${ddKey}.json`, { timeout: 6000 });
+    champId = parseInt(r.data?.data?.[ddKey]?.key);
+  } catch { return null; }
+
+  if (!champId) return null;
+
+  // 2. Busca ladder Challenger
+  const queueMap = { top:"RANKED_SOLO_5x5", jungle:"RANKED_SOLO_5x5", mid:"RANKED_SOLO_5x5", adc:"RANKED_SOLO_5x5", sup:"RANKED_SOLO_5x5" };
+  const ladder = await riotFetch(`/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5`);
+  if (!ladder?.entries?.length) return null;
+
+  console.log(`[Riot] Challenger ladder: ${ladder.entries.length} jogadores`);
+
+  // 3. Pega top 30 por wins (mais prováveis OTPs)
+  const topPlayers = ladder.entries
+    .filter(e => e.wins + e.losses >= 50)
+    .sort((a, b) => (b.wins + b.losses) - (a.wins + a.losses))
+    .slice(0, 30);
+
+  // 4. Para cada jogador, busca PUUID e recentes matches com o campeão
+  const otpBuilds = [];
+  const BATCH = 5; // máximo simultâneo para não bater rate limit
+
+  for (let i = 0; i < Math.min(topPlayers.length, 20); i += BATCH) {
+    const batch = topPlayers.slice(i, i + BATCH);
+    await Promise.all(batch.map(async (player) => {
+      try {
+        // Get summoner info (puuid)
+        const summ = await riotFetch(`/lol/summoner/v4/summoners/${player.summonerId}`);
+        if (!summ?.puuid) return;
+
+        // Get recent matches with this champion
+        const matches = await riotFetch(
+          `/lol/match/v5/matches/by-puuid/${summ.puuid}/ids?queue=420&count=10`,
+          "americas"
+        );
+        if (!matches?.length) return;
+
+        // Fetch match details and extract items
+        let champMatches = 0;
+        for (const matchId of matches.slice(0, 5)) {
+          const match = await riotFetch(`/lol/match/v5/matches/${matchId}`, "americas");
+          if (!match) continue;
+
+          const participant = match.info?.participants?.find(
+            p => p.puuid === summ.puuid && p.championId === champId
+          );
+          if (!participant) continue;
+
+          champMatches++;
+          const builtItems = [
+            participant.item0, participant.item1, participant.item2,
+            participant.item3, participant.item4, participant.item5,
+          ].filter(id => id > 0);
+
+          const itemsMap = await getDDItems();
+          const runesMap = await getDDRunes();
+
+          const itemNames   = builtItems.map(id => itemsMap[String(id)]).filter(Boolean);
+          const keystoneId  = participant.perks?.styles?.[0]?.selections?.[0]?.perk;
+          const primaryId   = participant.perks?.styles?.[0]?.style;
+          const secondaryId = participant.perks?.styles?.[1]?.style;
+
+          if (itemNames.length >= 4) {
+            otpBuilds.push({
+              summoner:   player.summonerId.slice(0, 10) + "...",
+              lp:         player.leaguePoints,
+              wins:       player.wins,
+              losses:     player.losses,
+              items:      itemNames,
+              keystone:   runesMap[keystoneId] || "",
+              primary:    runesMap[primaryId]  || "",
+              secondary:  runesMap[secondaryId] || "",
+              win:        participant.win,
+              kills:      participant.kills,
+              deaths:     participant.deaths,
+              assists:    participant.assists,
+              matchId,
+            });
+          }
+          if (champMatches >= 3) break;
+        }
+      } catch (e) { /* ignora jogador específico */ }
+    }));
+
+    if (otpBuilds.length >= 8) break; // suficiente
+    await new Promise(r => setTimeout(r, 500)); // small delay entre batches
+  }
+
+  if (!otpBuilds.length) return null;
+
+  // Agrupa e encontra as builds mais frequentes
+  const result = {
+    valid:     true,
+    fonte:     "Riot API — Challenger OTPs",
+    champion:  ddKey,
+    lane:      role,
+    totalGames: otpBuilds.length,
+    builds:    consolidateOTPBuilds(otpBuilds),
+    runas:     consolidateOTPRunes(otpBuilds),
+    raw:       otpBuilds.slice(0, 5),
+  };
+
+  return cacheSet(ck, result, TTL.riot);
+}
+
+function consolidateOTPBuilds(builds) {
+  // Encontra o item mítico mais comum (item 0-1 geralmente é o mítico)
+  const firstItems = {};
+  for (const b of builds) {
+    const key = b.items[0];
+    if (!key) continue;
+    firstItems[key] = (firstItems[key] || 0) + 1;
+  }
+  const topMythic = Object.entries(firstItems).sort((a,b)=>b[1]-a[1]).map(([k])=>k);
+
+  // Para cada mítico top, encontra a build mais comum
+  return topMythic.slice(0,2).map(mythic => {
+    const matching = builds.filter(b => b.items[0] === mythic);
+    // Conta frequência de cada item subsequente
+    const freq = {};
+    for (const b of matching) {
+      for (let i = 1; i < b.items.length; i++) {
+        freq[b.items[i]] = (freq[b.items[i]] || 0) + 1;
+      }
+    }
+    const topItems = Object.entries(freq).sort((a,b)=>b[1]-a[1]).map(([k])=>k);
+    const winRate  = Math.round((matching.filter(b=>b.win).length / matching.length) * 100);
+    return {
+      items:   [mythic, ...topItems.slice(0,5)],
+      games:   matching.length,
+      winRate,
+      label:   `OTP Challenger (${matching.length} partidas — WR ${winRate}%)`,
+    };
+  });
+}
+
+function consolidateOTPRunes(builds) {
+  const ksFreq = {};
+  for (const b of builds) {
+    if (b.keystone) ksFreq[b.keystone] = (ksFreq[b.keystone] || 0) + 1;
+  }
+  return Object.entries(ksFreq)
+    .sort((a,b)=>b[1]-a[1])
+    .slice(0,2)
+    .map(([ks, n]) => {
+      const matching = builds.filter(b => b.keystone === ks);
+      const primary   = mostFrequent(matching.map(b=>b.primary));
+      const secondary = mostFrequent(matching.map(b=>b.secondary));
+      const wr        = Math.round((matching.filter(b=>b.win).length / matching.length)*100);
+      return { keystone: ks, primary, secondary, games: n, winRate: wr, label: `OTP (${n} jogadores — WR ${wr}%)` };
+    });
+}
+
+function mostFrequent(arr) {
+  const freq = {};
+  for (const x of arr) if (x) freq[x] = (freq[x]||0)+1;
+  return Object.entries(freq).sort((a,b)=>b[1]-a[1])[0]?.[0] || "";
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ANÁLISE DE COMPOSIÇÃO — identifica o arquétipo do time inimigo/aliado
+// ═══════════════════════════════════════════════════════════════════════
+function analisarComp(teamStr) {
+  if (!teamStr || teamStr === "não informado") return { tipos: [], descricao: "" };
+  const t = teamStr.toLowerCase();
+
+  const TIPOS = {
+    engage_duro:  /malphite|amumu|jarvan|sejuani|leona|nautilus|blitzcrank|alistar|rell|wukong/,
+    poke:         /jayce|zoe|syndra|xerath|vel|nidalee|ezreal|corki|karma|lux|caitlyn|jinx/,
+    assassino:    /zed|talon|rengar|khazix|akali|diana|leblanc|fizz|katarina|shaco|nocturne|evelynn/,
+    split_push:   /camille|fiora|jax|tryndamere|yorick|nasus|yasuo|riven|irelia/,
+    teamfight:    /orianna|azir|amumu|malphite|zyra|rumble|kennen|jarvan|wukong/,
+    cura_pesada:  /soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|sylas|swain|olaf|gwen/,
+    escudos:      /lulu|janna|karma|renata|seraphine|shen|orianna/,
+    carry_ad:     /jinx|caitlyn|jhin|draven|vayne|tristana|twitch|ezreal|kaisa|xayah/,
+    carry_ap:     /syndra|leblanc|veigar|ahri|zoe|orianna|azir|cassiopeia/,
+    cc_pesado:    /malzahar|nautilus|blitzcrank|leona|amumu|morgana|alistar|thresh|sion|sejuani/,
+  };
+
+  const tipos = [];
+  for (const [tipo, regex] of Object.entries(TIPOS)) {
+    if (regex.test(t)) tipos.push(tipo);
+  }
+
+  const descricoes = {
+    engage_duro:  "engage duro (engage de diving)",
+    poke:         "poke pesado (lane de desgaste)",
+    assassino:    "assassinos (dive em carries)",
+    split_push:   "split push (pressão lateral)",
+    teamfight:    "teamfight pesado (lutas em grupo)",
+    cura_pesada:  "cura excessiva (precisa de grievous wounds)",
+    escudos:      "escudos (precisa de quebra-escudo)",
+    carry_ad:     "carry AD principal",
+    carry_ap:     "carry AP principal",
+    cc_pesado:    "CC em cadeia (precisa de tenacidade/cleanse)",
+  };
+
+  return {
+    tipos,
+    descricao: tipos.map(t => descricoes[t]).filter(Boolean).join("; ") || "composição geral",
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CLASSE DO CAMPEÃO + ITENS SITUACIONAIS CORRETOS POR CLASSE
+// ═══════════════════════════════════════════════════════════════════════
+const CLASSE_MAP = {
+  adc:         ["jinx","caitlyn","jhin","ezreal","draven","varus","ashe","sivir","tristana","twitch",
+                 "kogmaw","xayah","kalista","aphelios","samira","nilah","zeri","smolder","graves","quinn",
+                 "vayne","lucian","misfortune","draven","senna"],
+  mago:        ["lux","syndra","orianna","veigar","ahri","zoe","vel","xerath","anivia","annie",
+                 "malzahar","heimerdinger","neeko","ziggs","azir","viktor","cassiopeia","taliyah",
+                 "aurelionsol","hwei","ryze","lissandra","brand","seraphine","karma","morgana","zyra",
+                 "sona","zilean","galio","corki","swain"],
+  assassino_ap:["fizz","ekko","katarina","akali","diana","evelynn","leblanc","qiyana","sylas","naafiri"],
+  assassino_ad:["zed","talon","khazix","rengar","nocturne","akshan","shaco","kayn"],
+  lutador:     ["darius","garen","irelia","camille","fiora","jax","riven","renekton","tryndamere",
+                 "ambessa","aatrox","wukong","xinzhao","vi","jarvaniv","kled","olaf","urgot","sett",
+                 "yorick","illaoi","gwen","trundle","leesin","briar","yasuo","yone","volibear",
+                 "warwick","nasus","mordekaiser","belveth"],
+  tank:        ["malphite","maokai","ornn","chogath","sion","nautilus","leona","rell","amumu","zac",
+                 "sejuani","poppy","rammus","hecarim","udyr","nunu","skarner","drmundo","tahm",
+                 "alistar","braum","blitzcrank"],
+  enchanter:   ["lulu","soraka","nami","janna","karma","sona","yuumi","milio","seraphine","zilean",
+                 "renata","bard","ivern"],
+  sup_engage:  ["thresh","nautilus","blitzcrank","alistar","braum","rell","rakan","pyke","morgana",
+                 "brand","zyra","leona"],
 };
 
-function findChamp(name) {
-  if (!name) return null;
-  const raw = name.toLowerCase().trim();
-  const k = raw.replace(/['\s]+/g,"").normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-  return C[k] || C[ALIASES[raw]] || C[ALIASES[k]] || null;
+function getClasse(name) {
+  if (!name) return "desconhecido";
+  const n = name.toLowerCase().replace(/['\s]+/g,"").normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  for (const [c, lista] of Object.entries(CLASSE_MAP)) {
+    if (lista.some(x => n===x || n.startsWith(x) || x.startsWith(n))) return c;
+  }
+  return "desconhecido";
 }
 
-function formatChamp(ch) {
-  const lines = [`CAMPEÃO: ${ch.nome} | ROTA: ${ch.rota.toUpperCase()}`];
-  lines.push("\n── PATHS DE RUNA (escolha conforme o time inimigo) ──");
-  ch.runas.forEach((r,i) => {
-    lines.push(`\nOPÇÃO ${i+1} [usar quando: ${r.quando}]`);
-    lines.push(`  Primária: ${r.p} | Keystone: ${r.k}`);
-    lines.push(`  Slot 1: ${r.r1} | Slot 2: ${r.r2} | Slot 3: ${r.r3}`);
-    lines.push(`  Secundária: ${r.s} | ${r.s1} | ${r.s2}`);
-    lines.push(`  Shards: ${r.sh.join(" | ")}`);
-  });
-  lines.push("\n── PATHS DE BUILD (escolha conforme o time inimigo) ──");
-  ch.builds.forEach((b,i) => {
-    lines.push(`\nBUILD ${i+1} [usar quando: ${b.quando}]`);
-    b.items.forEach((item,idx) => lines.push(`  ${idx+1}. ${item}`));
-    lines.push(`  Iniciais: ${b.ini}`);
-  });
-  lines.push(`\n── ITENS SITUACIONAIS ──\n  ${ch.sit}`);
-  lines.push(`\nFEITIÇOS PADRÃO: ${ch.f.join(" + ")}`);
-  lines.push(`\nDICAS MECÂNICAS:\n${ch.d.map(d=>"• "+d).join("\n")}`);
-  return lines.join("\n");
+function situacionaisPorClasse(classe, enemies, allies) {
+  const e = (enemies||"").toLowerCase();
+  const a = (allies||"").toLowerCase();
+  const temCura    = /soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|irelia|sylas|swain|vladimir|olaf|gwen|nasus|fiora/.test(e);
+  const temTanks   = (e.match(/malphite|maokai|ornn|cho|sion|zac|sejuani|poppy|rammus|leona|nautilus|alistar|thresh|amumu|garen|drmundo|nasus/g)||[]).length >= 1;
+  const temEscudos = /lulu|janna|karma|renata|seraphine|shen|orianna/.test(e);
+  const temAssAD   = /zed|talon|rengar|khazix|nocturne|naafiri/.test(e);
+  const temAPCC    = /malzahar|veigar|syndra|lux|orianna|xerath|anivia|annie/.test(e);
+  const temCCHard  = /malzahar|nautilus|blitzcrank|leona|amumu|morgana|alistar|thresh/.test(e);
+  const fullAP     = !/darius|garen|zed|talon|jinx|caitlyn|jhin|ezreal|draven|graves|irelia|jax|riven|fiora|aatrox|ambessa|olaf|renekton|wukong|xin|vi|tryndamere|yasuo|yone|urgot|sett/.test(e);
+
+  const items = [], runas = [];
+
+  if (["adc","adc_onhit"].includes(classe)) {
+    if (temCura)    items.push("🔪 **Lembrete Mortal** — anti-cura para AD (nunca Morellonomicon, que é item AP)");
+    if (temTanks)   items.push("🐙 **Kraken Slayer** + **Lembrete Mortal** — % HP dano vs tanques");
+    if (temEscudos) items.push("🐍 **Serpentine Fang** — quebra shields de Lulu/Janna/Karma");
+    if (fullAP)     items.push("🔵 **Mercurial Scimitar** — MR + cleanse vs time full AP");
+    if (temAssAD)   items.push("💀 **Guardião Mortal** — MR vs assassino AD foca em você");
+
+  } else if (["mago","assassino_ap"].includes(classe)) {
+    if (temCura)    items.push("🔮 **Morellonomicon** — anti-cura para AP (nunca Lembrete Mortal, que é item AD)");
+    if (temTanks)   items.push("🌀 **Bastão do Vazio** — penetração mágica % obrigatória vs 2+ tanques");
+    if (temAssAD)   items.push("⏳ **Ampulheta de Zhonya** slot 3 — sobreviver Zed/Talon/Rengar");
+    if (temAPCC)    items.push("🔵 **Véu da Banshee** — bloqueia 1ª habilidade de Malzahar/Veigar/Syndra");
+    if (fullAP)     items.push("⏳ **Ampulheta de Zhonya** early — time full AD vai te focar primeiro");
+
+  } else if (classe === "assassino_ad") {
+    if (temCura)    items.push("🔪 **Faca Chempunk Serrilhada** — anti-cura AD (nunca Morellonomicon)");
+    if (temTanks)   items.push("🗡️ **Rancor de Serylda** — armor pen + slow vs tanques");
+    if (temEscudos) items.push("🐍 **Serpentine Fang** — quebra shields");
+    if (temCCHard)  items.push("🔵 **Cimitarra Mercurial** — cleanse vs suppressão/root");
+
+  } else if (classe === "lutador") {
+    if (temCura)    items.push("🔪 **Faca Chempunk Serrilhada** — anti-cura melee (nunca Morellonomicon)");
+    if (temTanks)   items.push("🔪 **Faca Chempunk** ou **Lembrete Mortal** — depends on range");
+    if (temEscudos) items.push("🐍 **Serpentine Fang** — vs Lulu/Janna/Karma suporte");
+    if (fullAP)     items.push("🍀 **Força da Natureza** + **Botas de Mercúrio** vs time full AP");
+    if (temCCHard)  items.push("🔵 **Cimitarra Mercurial** — cleanse vs suppressão/root longo");
+
+  } else if (classe === "tank") {
+    if (temCura)    items.push("🌵 **Armadura de Espinhos** — anti-cura tank (nunca Morellonomicon/Lembrete Mortal)");
+    if (fullAP)     items.push("🍀 **Força da Natureza** obrigatória vs time full AP");
+    if (temAPCC)    items.push("🔵 **Véu da Banshee** — bloqueia 1ª habilidade de mago pesado");
+
+  } else if (["enchanter","sup_engage"].includes(classe)) {
+    if (temAssAD)   items.push("🔒 **Vigilância Locket** — dive vai te matar primeiro como enchanter");
+    if (temTanks)   items.push("💚 **Fortaleza de Redenção** — utility extra vs tanks tanky");
+  }
+
+  if (temTanks && !["tank","enchanter","sup_engage"].includes(classe))
+    runas.push("📌 RUNA: **Conquistador** > Eletrocutar vs 2+ tanques (dano sustentado em fights longas)");
+  if (temCCHard && !["tank"].includes(classe))
+    runas.push("📌 RUNA SECUNDÁRIA: **Lenda: Tenacidade** vs CC pesado (Nautilus/Leona/Malzahar)");
+  if (temAssAD && ["mago","assassino_ap"].includes(classe))
+    runas.push("📌 RUNA: **Manto de Nuvem** na secundária vs assassino AD — 10s de invulnerabilidade");
+
+  return { items, runas };
 }
 
-let ddVer = "atual", ddLast = 0;
-async function getPatch() {
-  if (ddVer !== "atual" && Date.now()-ddLast < 6*3600000) return ddVer;
-  try {
-    const r = await axios.get("https://ddragon.leagueoflegends.com/api/versions.json",{timeout:6000});
-    ddVer = r.data[0]; ddLast = Date.now();
-  } catch {}
-  return ddVer;
+// ═══════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════
+function parseChampList(str) {
+  if (!str || str === "não informado") return [];
+  return str.split(/[,;/]+/).map(s => s.trim()).filter(Boolean);
 }
 
-app.get("/", async (req,res) => {
+// ═══════════════════════════════════════════════════════════════════════
+// ROTAS
+// ═══════════════════════════════════════════════════════════════════════
+app.get("/", async (req, res) => {
   const patch = await getPatch();
-  res.json({ status:"Nexus Oracle online", patch, campeoes_com_multiplos_builds: Object.keys(C).length });
+  res.json({
+    status: "Nexus Oracle online",
+    patch,
+    riot_key: RIOT_KEY ? "configurada" : "não configurada (OTPs desabilitados)",
+    fontes: ["lolalytics.com (builds + matchups + comp)", "Riot API (Challenger OTPs)", "Data Dragon (nomes)"],
+  });
 });
 
-// ── POST /oracle — análise adaptativa baseada no time inimigo ──
-app.post("/oracle", async (req,res) => {
+// ── POST /oracle ──────────────────────────────────────────────────────
+app.post("/oracle", async (req, res) => {
   try {
-    const { question, context={} } = req.body;
-    if (!question) return res.status(400).json({ error:"question ausente" });
+    const { question, context = {} } = req.body;
+    if (!question) return res.status(400).json({ error: "question ausente" });
+
     const { champion="", role="", allies="não informado", enemies="não informado", bans="não informado" } = context;
     const patch = await getPatch();
+    const champName = champion.trim();
+    const classe    = getClasse(champName);
 
-    let champKey = champion.toLowerCase().replace(/['\s]+/g,"").normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-    if (!C[champKey]) {
-      const lower = question.toLowerCase();
-      champKey = Object.keys(C).find(k => lower.includes(k))
-        || (Object.keys(ALIASES).find(k=>lower.includes(k)) ? ALIASES[Object.keys(ALIASES).find(k=>lower.includes(k))] : "")
-        || "";
+    // ─────────────────────────────────────────────────────────────────
+    // COLETA DADOS EM PARALELO
+    // ─────────────────────────────────────────────────────────────────
+    const [llBase, otpData] = await Promise.all([
+      champName ? lolalyticsBase(champName, role) : null,
+      champName ? riotChallengerOTPs(champName, role) : null,
+    ]);
+
+    // Matchups vs inimigos
+    const enemyList  = parseChampList(enemies);
+    const allyList   = parseChampList(allies);
+    const compData   = champName
+      ? await lolalyticsComp(champName, role, allyList, enemyList)
+      : { vsData: [], withData: [] };
+
+    // Análise de composição
+    const compAnalysis = analisarComp(enemies);
+    const allyAnalysis = analisarComp(allies);
+
+    // Itens situacionais server-side
+    const { items: sitItems, runas: sitRunas } = situacionaisPorClasse(classe, enemies, allies);
+
+    // ─────────────────────────────────────────────────────────────────
+    // FORMATA TUDO PARA O PROMPT
+    // ─────────────────────────────────────────────────────────────────
+    const sections = [];
+
+    // Lolalytics base
+    if (llBase?.valid) {
+      sections.push(`━━ LOLALYTICS — BUILDS GERAIS (${llBase.games.toLocaleString()} partidas Platinum+) ━━`);
+      llBase.builds.forEach((b, i) => {
+        sections.push(`Build ${i+1} [${b.label}] WR:${b.winRate}% Pick:${b.pickRate}%`);
+        sections.push(b.items.map((it,idx)=>`  ${idx+1}. ${it}`).join("\n"));
+      });
+      if (llBase.runas.length) {
+        sections.push("\nRunas mais usadas:");
+        llBase.runas.forEach(r => sections.push(`  • [${r.label}] Keystone: ${r.keystone}${r.primary?" | Primária: "+r.primary:""}${r.secondary?" | Secundária: "+r.secondary:""} (WR ${r.winRate}%)`));
+      }
+      if (llBase.skillOrder) sections.push(`  • Skill order mais comum: ${llBase.skillOrder}`);
+    } else {
+      sections.push(`━━ LOLALYTICS — dados não disponíveis agora para ${champName||"?"} ━━`);
     }
-    const champData = findChamp(champKey) || findChamp(champion);
 
-    // ── Detecta classe e calcula itens situacionais corretos ANTES da IA ──
-    const classe = getClasse(champData?.nome || champion);
-    const { situacionais, alertas } = resolverSituacionais(classe, enemies, allies);
+    // Matchups vs inimigos
+    if (compData.vsData.length) {
+      sections.push(`\n━━ MATCHUPS vs INIMIGOS DESTA PARTIDA ━━`);
+      compData.vsData.forEach(m => sections.push(`  • vs ${m.champ}: WR ${m.wr}% (${m.games} jogos) — ${m.wr>=50?"favorável":"desfavorável"}`));
+    }
 
-    const isBestPick = /melhor pick|melhor campe|qual pick|counter|composição|composicao|what pick|best pick/i.test(question);
+    // Sinergia com aliados
+    if (compData.withData.length) {
+      sections.push(`\n━━ SINERGIA COM ALIADOS ━━`);
+      compData.withData.forEach(m => sections.push(`  • com ${m.champ}: WR ${m.wr}% (${m.games} jogos)`));
+    }
 
-    const champBlock = champData
-      ? formatChamp(champData)
-      : `Campeão "${champion||"não especificado"}" não está no banco local. Classe detectada: ${classe||"desconhecida"}. Use conhecimento do patch ${patch}.`;
+    // OTPs Challenger
+    if (otpData?.valid) {
+      sections.push(`\n━━ RIOT API — CHALLENGER OTPs (${otpData.totalGames} partidas analisadas) ━━`);
+      otpData.builds.forEach(b => {
+        sections.push(`${b.label}:`);
+        sections.push(b.items.map((it,i)=>`  ${i+1}. ${it}`).join("\n"));
+      });
+      if (otpData.runas.length) {
+        sections.push("Runas preferidas pelos OTPs:");
+        otpData.runas.forEach(r => sections.push(`  • ${r.keystone} — ${r.primary} / ${r.secondary} (${r.label})`));
+      }
+    } else if (RIOT_KEY) {
+      sections.push(`\n━━ RIOT API — sem dados OTP disponíveis agora ━━`);
+    } else {
+      sections.push(`\n━━ RIOT API — não configurada (adicione RIOT_KEY no Render para habilitar OTPs Challenger) ━━`);
+    }
 
-    const situBlock = situacionais.length
-      ? `\n═══ ITENS SITUACIONAIS PRÉ-CALCULADOS (USE EXATAMENTE ESTES) ═══\nClasse do campeão: ${classe||"desconhecida"}\n${situacionais.join("\n")}\n${alertas.length ? "\nALERTAS DE RUNA:\n"+alertas.join("\n") : ""}\n\nIMPORTANTE: Os itens acima foram calculados especificamente para a CLASSE deste campeão. Não sugira itens de outra classe (ex: nunca Morellonomicon para AD, nunca Lembrete Mortal para AP).`
-      : `\nClasse do campeão: ${classe||"desconhecida"}\nNenhuma ameaça crítica detectada — use a build padrão do banco.`;
+    // Análise de composição
+    sections.push(`\n━━ ANÁLISE DE COMPOSIÇÃO ━━`);
+    sections.push(`Time INIMIGO (${enemies}): ${compAnalysis.descricao || "composição não identificada"}`);
+    sections.push(`Time ALIADO  (${allies}): ${allyAnalysis.descricao || "composição não identificada"}`);
 
-    const bestPickInstructions = isBestPick ? `
-═══ FORMATO PARA MELHOR PICK ═══
-Responda com este formato destacado:
+    // Situacionais server-side
+    if (sitItems.length || sitRunas.length) {
+      sections.push(`\n━━ AJUSTES SITUACIONAIS (pré-calculados — classe: ${classe}) ━━`);
+      sections.push("⚠️ Use EXATAMENTE estes itens situacionais — calculados para a classe do campeão:");
+      sitItems.forEach(x => sections.push("  " + x));
+      sitRunas.forEach(x => sections.push("  " + x));
+    }
 
+    const dataBlock = sections.join("\n");
+
+    // ─────────────────────────────────────────────────────────────────
+    // Detecta tipo de pergunta
+    // ─────────────────────────────────────────────────────────────────
+    const isBestPick = /melhor pick|melhor campe|qual pick|best pick|composição|counter|qual jog/i.test(question);
+    const bestPickFmt = isBestPick ? `
+FORMATO OBRIGATÓRIO:
 🏆 MELHOR PICK PARA ESSA COMPOSIÇÃO
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 **[CAMPEÃO RECOMENDADO]** — [Rota]
 
 ✅ POR QUÊ É O MELHOR:
-• [razão 1 conectada ao time aliado]
-• [razão 2 conectada aos inimigos]
-• [sinergia com aliados]
+• [motivo 1 — resposta ao time INIMIGO]
+• [motivo 2 — sinergia com time ALIADO]
+• [motivo 3 — se ADC, mencione sinergia com suporte aliado]
+
+📊 DADOS QUE CONFIRMAM:
+• WR vs comp inimiga: X% (se disponível)
+• WR com suporte aliado: X% (se disponível)
 
 ⚔️ COMO VENCE OS INIMIGOS:
-• [matchup vs inimigo principal]
-• [como lida com a ameaça maior]
+• [matchup principal]
+• [como lidar com ameaça maior]
 
-🔄 ALTERNATIVAS (se o pick principal for banido):
-• 2° opção: [campeão] — [motivo breve]
-• 3° opção: [campeão] — [motivo breve]
+🔄 ALTERNATIVAS (se principal estiver banido):
+• 2° pick: [campeão] — [motivo]
+• 3° pick: [campeão] — [motivo]
 
-❌ EVITE: [campeões que não funcionam nessa comp] — [motivo]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` : "";
+❌ EVITE JOGAR: [campeões ruins nessa composição específica]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` : "";
 
-    const prompt = `Você é um coach Challenger de League of Legends no patch ${patch}.
+    const systemRule = [
+      `Coach Challenger de LoL. Classe do campeão: "${classe}".`,
+      classe==="adc" ? "CAMPEÃO AD: anti-cura = LEMBRETE MORTAL (NUNCA Morellonomicon). Nunca sugira itens AP." : "",
+      ["mago","assassino_ap"].includes(classe) ? "CAMPEÃO AP: anti-cura = MORELLONOMICON (NUNCA Lembrete Mortal). Nunca sugira itens AD." : "",
+      classe==="assassino_ad" ? "ASSASSINO AD: anti-cura = FACA CHEMPUNK (NUNCA Morellonomicon)." : "",
+      classe==="lutador" ? "LUTADOR: anti-cura = FACA CHEMPUNK ou THORNMAIL (NUNCA Morellonomicon)." : "",
+      classe==="tank" ? "TANK: anti-cura = ARMADURA DE ESPINHOS (NUNCA Morellonomicon ou Lembrete Mortal)." : "",
+      "Ao sintetizar as fontes: priorize OTPs Challenger > lolalytics > conhecimento geral.",
+      "Sempre justifique as escolhas com base na composição inimiga desta partida.",
+      "Responda em português brasileiro.",
+    ].filter(Boolean).join(" ");
 
-═══ DADOS DO CAMPEÃO ═══
-${champBlock}
+    const prompt = `${dataBlock}
 
-${situBlock}
+${bestPickFmt}
 
-${bestPickInstructions}
+Pergunta: ${question}
 
-═══ CONTEXTO DA PARTIDA ═══
-Rota: ${role||"n/a"}
-Meu time: ${allies}
-Time INIMIGO: ${enemies}
-Bans: ${bans}
+TAREFA:
+1. Analise a composição inimiga acima e identifique as maiores ameaças
+2. Analise a sinergia com o time aliado
+3. Com base em TODOS os dados coletados (lolalytics + OTPs + matchups), sintetize em UMA ÚNICA recomendação de build e runas para ESTA partida específica
+4. Aplique os ajustes situacionais pré-calculados acima
+5. Justifique cada escolha com referência à composição inimiga
 
-═══ SUA TAREFA ═══
-1. Analise o time INIMIGO acima
-2. Identifique ameaças (tanques? carries? cura? CC? assassinos? poke? escudos?)
-3. Escolha O MELHOR path de runa e build para ESSA partida
-4. Use os itens situacionais PRÉ-CALCULADOS acima — eles já estão corretos para a classe do campeão
-5. Explique BREVEMENTE por que cada escolha se aplica aos inimigos listados
+Patch: ${patch}`;
 
-Responda em português brasileiro.
-Pergunta: ${question}`;
-
-    const resp = await axios.post("https://api.groq.com/openai/v1/chat/completions",
-      { model:"llama-3.3-70b-versatile", max_tokens:1100, temperature:0.15,
-        messages:[
-          { role:"system", content:`Coach Challenger de LoL. REGRA CRÍTICA: respeite sempre a classe do campeão ao sugerir itens situacionais. Classe "${classe||"desconhecida"}": ${
-            classe==="adc"||classe==="adc_onhit" ? "campeão AD — anti-cura = Lembrete Mortal, NUNCA Morellonomicon" :
-            classe==="mago"||classe==="assassino_ap"||classe==="mago_top" ? "campeão AP — anti-cura = Morellonomicon, NUNCA Lembrete Mortal" :
-            classe==="assassino_ad" ? "assassino AD — anti-cura = Faca Chempunk/Lembrete Mortal, NUNCA Morellonomicon" :
-            classe==="lutador" ? "lutador físico — anti-cura = Faca Chempunk ou Thornmail, NUNCA Morellonomicon" :
-            classe==="tank" ? "tank — anti-cura = Armadura de Espinhos, NUNCA Morellonomicon ou Lembrete Mortal" :
-            "respeite a classe ao sugerir itens"
-          }. Responda em português brasileiro.` },
-          { role:"user", content:prompt }
-        ] },
-      { headers:{ Authorization:`Bearer ${GROQ_KEY}`, "Content-Type":"application/json" }, timeout:30000 }
+    const resp = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      { model:"llama-3.3-70b-versatile", max_tokens:1200, temperature:0.1,
+        messages:[{ role:"system", content:systemRule },{ role:"user", content:prompt }] },
+      { headers:{ Authorization:`Bearer ${GROQ_KEY}`, "Content-Type":"application/json" }, timeout:35000 }
     );
-    res.json({ text: resp.data.choices[0].message.content, patch, classe });
-  } catch(e) {
-    const d = e.response?.data||e.message;
-    console.log("ERRO /oracle:", JSON.stringify(d));
+
+    res.json({
+      text: resp.data.choices[0].message.content,
+      patch,
+      classe,
+      fontes: {
+        lolalytics: llBase?.valid ? `${llBase.games} partidas` : "indisponível",
+        matchups:   compData.vsData.length,
+        sinergias:  compData.withData.length,
+        otp_riot:   otpData?.valid ? `${otpData.totalGames} partidas OTP` : (RIOT_KEY ? "sem dados" : "RIOT_KEY não configurada"),
+      },
+    });
+
+  } catch (e) {
+    const d = e.response?.data || e.message;
+    console.log("ERRO /oracle:", JSON.stringify(d).slice(0,200));
     res.status(500).json({ error: JSON.stringify(d) });
   }
 });
 
-// ── POST /analyze — visão ao vivo ──
-app.post("/analyze", async (req,res) => {
+// ── POST /analyze ──────────────────────────────────────────────────────
+app.post("/analyze", async (req, res) => {
   try {
-    const { image, context={}, gameTime } = req.body;
-    if (!image) return res.status(400).json({ error:"image ausente" });
+    const { image, context = {}, gameTime } = req.body;
+    if (!image) return res.status(400).json({ error: "image ausente" });
     const { allies="", enemies="", champion="" } = context;
     const patch = await getPatch();
-    const min = parseInt(gameTime)||0;
+    const min = parseInt(gameTime) || 0;
 
     const tips = [];
-    if (min>=1&&min<=2) tips.push("Plante sentinela no tribush ou rio lateral");
-    if (min>=3&&min<=4) tips.push("Jungle inimigo pode estar no camp vermelho — ward no rio");
-    if (min>=5&&min<=6) tips.push("Primeiro dragão disponível — pressione bot ou prepare vision");
-    if (min>=8&&min<=10) tips.push("Segundo drag em breve — roaming jungle provável");
-    if (min>=14&&min<=16) tips.push("Dragão da Alma disponível — prioridade máxima de objetivo");
-    if (min>=20) tips.push("Barão Nashor ativo — ward pixel brush e entrada do pit");
-    if (min>=25) tips.push("Late game: não ande sozinho sem vision, agrupe para objetivos");
+    if (min>=1  && min<=2)  tips.push("Plante sentinela no tribush ou rio lateral");
+    if (min>=3  && min<=4)  tips.push("Jungle inimigo pode estar no camp vermelho — ward no rio");
+    if (min>=5  && min<=6)  tips.push("Primeiro dragão disponível — pressione bot ou prepare visão");
+    if (min>=8  && min<=10) tips.push("Segundo dragão em breve — jungle provavelmente rotacionando");
+    if (min>=14 && min<=16) tips.push("Dragão da Alma disponível — prioridade máxima");
+    if (min>=20)            tips.push("Barão Nashor ativo — ward pixel brush e entrada do pit");
+    if (min>=25)            tips.push("Late game: não ande sozinho, agrupe para objetivos");
 
-    const prompt = `Coach Challenger analisando screenshot ao vivo. Patch ${patch}. Campeão: ${champion}. Aliados: ${allies}. Inimigos: ${enemies}. Minuto: ${min}.
-${tips.length?"\nDICAS PARA ESSE MINUTO:\n"+tips.map(t=>"• "+t).join("\n"):""}
+    const prompt = `Coach Challenger de LoL ao vivo. Patch ${patch}. Campeão: ${champion}. Aliados: ${allies}. Inimigos: ${enemies}. Minuto: ${min}.
+${tips.length ? "\nDICAS PARA "+min+"min:\n"+tips.map(t=>"• "+t).join("\n") : ""}
 
 Analise o screenshot e retorne APENAS JSON:
-{"acao":"instrução em até 7 palavras","urgencia":"alta|media|baixa","detalhes":"1 frase do que você viu na tela","observacoes":["dica1","dica2"]}
-Urgência: alta=vida<30% ou inimigo atacando|media=objetivo disponível|baixa=estável`;
+{"acao":"instrução em até 7 palavras","urgencia":"alta|media|baixa","detalhes":"1 frase do que você viu","observacoes":["dica1","dica2"]}`;
 
-    const resp = await axios.post("https://api.groq.com/openai/v1/chat/completions",
+    const resp = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
       { model:"meta-llama/llama-4-scout-17b-16e-instruct", max_tokens:220, temperature:0.1,
-        messages:[{role:"user",content:[{type:"text",text:prompt},{type:"image_url",image_url:{url:`data:image/jpeg;base64,${image}`}}]}] },
+        messages:[{ role:"user", content:[
+          { type:"text", text:prompt },
+          { type:"image_url", image_url:{ url:`data:image/jpeg;base64,${image}` } },
+        ]}] },
       { headers:{ Authorization:`Bearer ${GROQ_KEY}`, "Content-Type":"application/json" }, timeout:12000 }
     );
 
     const raw = resp.data.choices[0].message.content;
     let parsed;
-    try { const m = raw.match(/\{[\s\S]*\}/); parsed = JSON.parse(m?m[0]:raw); }
+    try { const m = raw.match(/\{[\s\S]*\}/); parsed = JSON.parse(m ? m[0] : raw); }
     catch { parsed = { acao:"Analisando...", urgencia:"baixa", detalhes:raw.slice(0,150), observacoes:[] }; }
     res.json(parsed);
-  } catch(e) {
-    const d = e.response?.data||e.message;
-    console.log("ERRO /analyze:", JSON.stringify(d));
+
+  } catch (e) {
+    const d = e.response?.data || e.message;
+    console.log("ERRO /analyze:", JSON.stringify(d).slice(0,200));
     res.status(500).json({ error: JSON.stringify(d) });
   }
 });
 
-getPatch().catch(()=>{});
-app.listen(3000, ()=>console.log("Nexus Oracle rodando"));
+// Start
+getPatch().then(p => {
+  console.log(`Nexus Oracle | patch ${p} | Riot API: ${RIOT_KEY ? "ON" : "OFF"}`);
+  getDDItems().catch(()=>{});
+  getDDRunes().catch(()=>{});
+  getDDChampions().catch(()=>{});
+}).catch(()=>{});
+
+app.listen(3000, () => console.log("Servidor na porta 3000"));
