@@ -486,32 +486,163 @@ const C = {
 // ═══════════════════════════════════════════════════════════════════════════
 // REGRAS ADAPTATIVAS GLOBAIS — aplica a QUALQUER campeão
 // ═══════════════════════════════════════════════════════════════════════════
-const REGRAS_ADAPTATIVAS = `
-ANÁLISE DE COMPOSIÇÃO INIMIGA — APLIQUE SEMPRE:
+// ═══════════════════════════════════════════════════════════════════════════
+// CLASSE DE CADA CAMPEÃO — determina quais itens situacionais fazem sentido
+// ═══════════════════════════════════════════════════════════════════════════
+const CLASSE = {
+  // AD carries (dano físico, itens de crit/AS — NUNCA AP)
+  adc: ["jinx","caitlyn","jhin","ezreal","draven","varus","ashe","sivir","tristana",
+        "twitch","kogmaw","xayah","kalista","aphelios","samira","nilah","zeri","smolder","graves","quinn"],
+  // On-hit ADC (similar a adc mas com Guinsoo/Kraken)
+  adc_onhit: ["kaisa","varus","kog maw","kogmaw","vayne"],
+  // Magos (dano mágico — NUNCA itens AD como Lembrete Mortal)
+  mago: ["lux","syndra","orianna","veigar","ahri","zoe","vel","xerath","anivia","annie",
+         "malzahar","heimerdinger","neeko","ziggs","azir","viktor","cassiopeia","taliyah",
+         "aurelionsol","hwei","ryze","lissandra","swain","brand","seraphine","karma",
+         "morgana","zyra","sona","zilean"],
+  // Assassinos AP (dano mágico mas burst — itens como Zhonya, nunca Lembrete Mortal)
+  assassino_ap: ["fizz","ekko","katarina","akali","diana","evelynn","leblanc","qiyana",
+                 "sylas","shaco","zed_ap","talon_ap"],
+  // Assassinos AD (dano físico — NUNCA Morellonomicon)
+  assassino_ad: ["zed","talon","khazix","rengar","nocturne","naafiri","kayn_red","akshan"],
+  // Lutadores AD (bruisers físicos — anti-cura = Faca Chempunk ou Thornmail, NUNCA Morellonomicon)
+  lutador: ["darius","garen","irelia","camille","fiora","jax","riven","renekton","tryndamere",
+            "ambessa","aatrox","volibear","warwick","wukong","xinzhao","vi","jarvaniv",
+            "kled","olaf","urgot","sett","yorick","illaoi","mordekaiser","gwen",
+            "trundle","leesin","briar","belveth","nilah","yasuo","yone"],
+  // Magos/Lutadores top (mistura — verificar caso a caso)
+  mago_top: ["gwen","kennen","rumble","teemo","heimerdinger","singed","mordekaiser","swain"],
+  // Tanks (compram armor/MR — anti-cura = Thornmail, NUNCA Morellonomicon)
+  tank: ["malphite","maokai","ornn","chogath","sion","nautilus","leona","rell","amumu",
+         "zac","sejuani","poppy","rammus","hecarim","udyr","nunu","skarner",
+         "drmundo","nasus","tahm","volibear","garen","alistar","braum","blitzcrank"],
+  // Enchanters (suporte heal/shield — itens de suporte, NUNCA Morellonomicon)
+  enchanter: ["lulu","soraka","nami","janna","karma","sona","yuumi","milio","seraphine",
+              "zilean","renata","bard","ivern"],
+  // Suportes tank/engage
+  sup_tank: ["thresh","leona","nautilus","blitzcrank","alistar","braum","rell","rakan",
+             "pyke","morgana","brand","zyra","swain"],
+};
 
-► RUNAS:
-  • Time inimigo com 3+ tanques/bruisers → prefira Conquistador sobre Eletrocutar
-  • Lane de poke (Zoe/Syndra/Jayce ranged) → Fase Rush ou Barreira de Mana
-  • Inimigos que te matam antes de agir → considere Fase Rush + Manto de Nuvem
-  • Precisa de sustain em fights longas → Conquistador > Eletrocutar
+// Retorna a classe do campeão
+function getClasse(champName) {
+  if (!champName) return null;
+  const n = champName.toLowerCase().replace(/['\s]+/g,"").normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  for (const [classe, lista] of Object.entries(CLASSE)) {
+    if (lista.some(x => n.includes(x) || x.includes(n))) return classe;
+  }
+  return null;
+}
 
-► ITENS SITUACIONAIS (substitua/adicione conforme necessidade):
-  • 2+ heals pesados no time inimigo (Soraka/Yuumi/Dr. Mundo/Aatrox) → Morellonomicon obrigatório (slot 2-3)
-  • 3+ tanques/bruisers inimigos → Bastão do Vazio / Lembrete Mortal obrigatórios (slot 4-5)
-  • Time inimigo com muitos escudos (Lulu/Janna/Karma/Renata) → Serpentine Fang (slot 2-3)
-  • AP pesado / CC mágico longo (Malzahar/Syndra/Veigar/LeBlanc) → Véu da Banshee
-  • Assassino AD difícil de lidar (Zed/Talon/Rengar/Kha'Zix) → Ampulheta de Zhonya
-  • Time inimigo com muito Lifesteal (Aatrox/Warwick/Irelia) → Armadura de Espinhos (tanks) ou Lembrete Mortal (carries)
-  • Muito armor inimigo (tanques AD) → Rancor de Serylda ou Lembrete Mortal
-  • Time full AD → priorize armor (Tabard/Plated Steelcaps/Thornmail)
-  • Time full AP → priorize resistência mágica (Força da Natureza/Véu da Banshee/Botas de Mercúrio)
+// ═══════════════════════════════════════════════════════════════════════════
+// RESOLVER DE ITENS SITUACIONAIS — baseado em classe + time inimigo
+// Calcula server-side para garantir que a IA não erre por ignorância de classe
+// ═══════════════════════════════════════════════════════════════════════════
+function resolverSituacionais(classe, enemies, allies) {
+  const e = (enemies||"").toLowerCase();
+  const situacionais = [];
+  const alertas = [];
 
-► FEITIÇOS:
-  • ADC vs lane poke pesada → Barreira > Cura
-  • Support vs carry mortal → Ignite > Exaurir
-  • Support vs engage/dive → Exaurir > Ignite
-  • Jungler vs smite contest (Caitlyn/Draven ADC com bom range) → Flash + Smite sempre
-`;
+  // ── detectar ameaças no time inimigo ──
+  const temCura = /soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|irelia|sylas|swain|vladimir|olaf|gwen/.test(e);
+  const temTanques = (e.match(/malphite|maokai|ornn|chogath|sion|zac|sejuani|poppy|rammus|leona|nautilus|blitzcrank|alistar|thresh|amumu|garen|nasus|drmundo/g)||[]).length >= 1;
+  const muitosTanques = (e.match(/malphite|maokai|ornn|chogath|sion|zac|sejuani|poppy|rammus|leona|nautilus|blitzcrank|alistar|thresh|amumu|garen|nasus|drmundo/g)||[]).length >= 2;
+  const temEscudos = /lulu|janna|karma|renata|seraphine|shen|orianna/.test(e);
+  const temAssassinoAD = /zed|talon|rengar|khazix|kha.zix|nocturne|naafiri/.test(e);
+  const temAssassinoAP = /fizz|leblanc|akali|diana|evelynn|katarina/.test(e);
+  const temAPPesado = /malzahar|veigar|syndra|lux|orianna|xerath|vel.koz|anivia|annie/.test(e);
+  const temCCLongo = /malzahar|nautilus|blitzcrank|leona|amumu|morgana|alistar/.test(e);
+  const temFullAD = !/syndra|lux|orianna|xerath|vel|annie|veigar|malzahar|anivia|azir|cassio|aurelion|viktor|ziggs|hwei|ryze|zoe|neeko|rumble|mordekaiser|karma|brand|zyra|sona/.test(e);
+  const temFullAP = !/darius|garen|zed|talon|jinx|caitlyn|jhin|ezreal|draven|graves|irelia|jax|riven|fiora|aatrox|ambessa|olaf|renekton|wukong|xinzhao|vi|jarvan|tryndamere|yasuo|yone|urgot|sett/.test(e);
+
+  // ── regras por CLASSE ──
+  if (["adc","adc_onhit"].includes(classe)) {
+    // ADCs: dano físico — anti-cura é SEMPRE Lembrete Mortal (nunca Morellonomicon)
+    if (temCura)
+      situacionais.push("⚠️ ANTI-CURA: **Lembrete Mortal** (slot 4-5) — inimigos com cura pesada. NUNCA Morellonomicon pois você é AD");
+    if (muitosTanques)
+      situacionais.push("🛡️ ANTI-TANQUE: **Kraken Slayer** (se ainda não tem) + **Lembrete Mortal** para % HP dano");
+    if (temEscudos)
+      situacionais.push("🔰 ANTI-ESCUDO: **Serpentine Fang** (slot 3-4) vs Lulu/Janna/Karma no time inimigo");
+    if (temAPPesado || temCCLongo)
+      situacionais.push("🔵 VS AP PESADO: **Guardião Mortal** (slot 5-6) para resistência mágica");
+    if (temFullAP)
+      situacionais.push("🔵 TIME FULL AP: **Mercurial Scimitar** para tenacidade + MR + cleanse de CC");
+    if (temAssassinoAD)
+      situacionais.push("🗡️ VS ASSASSINO AD (Zed/Talon): jogue atrás do time, **Guardião Mortal** se levando muito burst");
+
+  } else if (["mago","assassino_ap","mago_top"].includes(classe)) {
+    // Magos/Assassinos AP: dano mágico — anti-cura é SEMPRE Morellonomicon (nunca Lembrete Mortal)
+    if (temCura)
+      situacionais.push("⚠️ ANTI-CURA: **Morellonomicon** (slot 3-4) — reduz cura de Soraka/Mundo/Aatrox. NUNCA Lembrete Mortal pois você é AP");
+    if (muitosTanques)
+      situacionais.push("🛡️ ANTI-TANQUE: **Bastão do Vazio** obrigatório vs 2+ tanques (penetração mágica %)");
+    if (temEscudos)
+      situacionais.push("🔰 ANTI-ESCUDO: **Anathema's Chains** não se aplica para magos — foco em dano raw com Bastão do Vazio");
+    if (temAssassinoAD)
+      situacionais.push("🗡️ VS ASSASSINO AD (Zed/Talon/Rengar): **Ampulheta de Zhonya** obrigatória, compre no 3° slot");
+    if (temAPPesado || temCCLongo)
+      situacionais.push("🔵 VS AP CC PESADO: **Véu da Banshee** (slot 4-5) bloqueia a primeira habilidade inimiga");
+    if (temFullAD)
+      situacionais.push("⚔️ TIME FULL AD: **Ampulheta de Zhonya** early pois o burst físico vai te matar");
+
+  } else if (["assassino_ad"].includes(classe)) {
+    // Assassinos AD: físico — anti-cura = Faca Chempunk (NUNCA Morellonomicon)
+    if (temCura)
+      situacionais.push("⚠️ ANTI-CURA: **Faca Chempunk Serrilhada** ou **Lembrete Mortal** — você é AD, NUNCA Morellonomicon");
+    if (muitosTanques)
+      situacionais.push("🛡️ ANTI-TANQUE: **Rancor de Serylda** para slow + armor pen vs tanques");
+    if (temEscudos)
+      situacionais.push("🔰 ANTI-ESCUDO: **Serpentine Fang** quebra shields de Lulu/Janna/Karma");
+    if (temAPPesado || temCCLongo)
+      situacionais.push("🔵 VS AP PESADO: **Véu de Morte** (para Zed) ou **Cimitarra Mercurial** para cleanse");
+    if (temCCLongo)
+      situacionais.push("🔵 VS CC LONGO: **Cimitarra Mercurial** para limpar suppressão/root");
+
+  } else if (["lutador"].includes(classe)) {
+    // Lutadores AD/mistura: anti-cura = Faca Chempunk ou Armadura de Espinhos
+    if (temCura)
+      situacionais.push("⚠️ ANTI-CURA: **Faca Chempunk Serrilhada** (slot 2-3) ou **Armadura de Espinhos** se você é tank — NUNCA Morellonomicon");
+    if (muitosTanques)
+      situacionais.push("🛡️ ANTI-TANQUE: **Lembrete Mortal** se você ataca de longe, **Faca Chempunk** se melee");
+    if (temEscudos)
+      situacionais.push("🔰 ANTI-ESCUDO: **Serpentine Fang** vs Lulu/Janna/Karma suporte");
+    if (temAPPesado)
+      situacionais.push("🔵 VS AP PESADO: **Força da Natureza** (slot 3-4) + **Botas de Mercúrio**");
+    if (temCCLongo)
+      situacionais.push("🔵 VS CC LONGO: **Cimitarra Mercurial** para cleanse ou **Botas de Mercúrio** para tenacidade");
+
+  } else if (["tank"].includes(classe)) {
+    // Tanks: anti-cura = Armadura de Espinhos (NUNCA Morellonomicon ou Lembrete Mortal)
+    if (temCura)
+      situacionais.push("⚠️ ANTI-CURA: **Armadura de Espinhos** — você é tank, este item reduz cura de quem te ataca. NUNCA Morellonomicon ou Lembrete Mortal");
+    if (temFullAP)
+      situacionais.push("🔵 TIME FULL AP: **Força da Natureza** + **Botas de Mercúrio** obrigatórios");
+    if (temFullAD)
+      situacionais.push("⚔️ TIME FULL AD: **Coração Congelado** + **Armadura de Espinhos** para armor máximo");
+    if (temAPPesado)
+      situacionais.push("🔵 VS MAGO PESADO: **Força da Natureza** + **Véu da Banshee** para sobreviver burst mágico");
+
+  } else if (["enchanter","sup_tank"].includes(classe)) {
+    // Suportes
+    if (temCura && classe === "sup_tank")
+      situacionais.push("⚠️ ANTI-CURA: **Executioner's Calling** (item barato) → upgradar para **Mortal Reminder** ou **Serpentine Fang** se AD suporte");
+    if (muitosTanques)
+      situacionais.push("🛡️ ANTI-TANQUE: **Fortaleza de Redenção** + **Sceptro de Rylai** para slow/damage extra");
+    if (temAssassinoAD && classe === "enchanter")
+      situacionais.push("🗡️ VS ASSASSINO: **Vigilância Locket** obrigatório para proteger você e o ADC");
+  }
+
+  // ── alertas de runa baseados na composição ──
+  if (muitosTanques && !["tank","enchanter","sup_tank"].includes(classe))
+    alertas.push("📌 RUNA: Prefira **Conquistador** sobre Eletrocutar vs 2+ tanques (dano sustentado > burst)");
+  if (temCCLongo && !["tank"].includes(classe))
+    alertas.push("📌 RUNA SECUNDÁRIA: Considere **Lenda: Tenacidade** vs muito CC inimigo");
+  if (temAssassinoAD && ["mago","assassino_ap"].includes(classe))
+    alertas.push("📌 RUNA: Considere **Manto de Nuvem** (secundária) vs assassino AD para 10s de invulnerabilidade");
+
+  return { situacionais, alertas };
+}
 
 // Aliases de busca
 const ALIASES = {
@@ -594,17 +725,52 @@ app.post("/oracle", async (req,res) => {
     }
     const champData = findChamp(champKey) || findChamp(champion);
 
+    // ── Detecta classe e calcula itens situacionais corretos ANTES da IA ──
+    const classe = getClasse(champData?.nome || champion);
+    const { situacionais, alertas } = resolverSituacionais(classe, enemies, allies);
+
+    const isBestPick = /melhor pick|melhor campe|qual pick|counter|composição|composicao|what pick|best pick/i.test(question);
+
     const champBlock = champData
       ? formatChamp(champData)
-      : `Campeão "${champion||"não especificado"}" não está no banco local. Use seu conhecimento do patch ${patch}, mas avise que não temos dados verificados para ele.`;
+      : `Campeão "${champion||"não especificado"}" não está no banco local. Classe detectada: ${classe||"desconhecida"}. Use conhecimento do patch ${patch}.`;
+
+    const situBlock = situacionais.length
+      ? `\n═══ ITENS SITUACIONAIS PRÉ-CALCULADOS (USE EXATAMENTE ESTES) ═══\nClasse do campeão: ${classe||"desconhecida"}\n${situacionais.join("\n")}\n${alertas.length ? "\nALERTAS DE RUNA:\n"+alertas.join("\n") : ""}\n\nIMPORTANTE: Os itens acima foram calculados especificamente para a CLASSE deste campeão. Não sugira itens de outra classe (ex: nunca Morellonomicon para AD, nunca Lembrete Mortal para AP).`
+      : `\nClasse do campeão: ${classe||"desconhecida"}\nNenhuma ameaça crítica detectada — use a build padrão do banco.`;
+
+    const bestPickInstructions = isBestPick ? `
+═══ FORMATO PARA MELHOR PICK ═══
+Responda com este formato destacado:
+
+🏆 MELHOR PICK PARA ESSA COMPOSIÇÃO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**[CAMPEÃO RECOMENDADO]** — [Rota]
+
+✅ POR QUÊ É O MELHOR:
+• [razão 1 conectada ao time aliado]
+• [razão 2 conectada aos inimigos]
+• [sinergia com aliados]
+
+⚔️ COMO VENCE OS INIMIGOS:
+• [matchup vs inimigo principal]
+• [como lida com a ameaça maior]
+
+🔄 ALTERNATIVAS (se o pick principal for banido):
+• 2° opção: [campeão] — [motivo breve]
+• 3° opção: [campeão] — [motivo breve]
+
+❌ EVITE: [campeões que não funcionam nessa comp] — [motivo]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` : "";
 
     const prompt = `Você é um coach Challenger de League of Legends no patch ${patch}.
 
 ═══ DADOS DO CAMPEÃO ═══
 ${champBlock}
 
-═══ REGRAS ADAPTATIVAS ═══
-${REGRAS_ADAPTATIVAS}
+${situBlock}
+
+${bestPickInstructions}
 
 ═══ CONTEXTO DA PARTIDA ═══
 Rota: ${role||"n/a"}
@@ -613,26 +779,31 @@ Time INIMIGO: ${enemies}
 Bans: ${bans}
 
 ═══ SUA TAREFA ═══
-1. Analise o time INIMIGO listado acima
-2. Determine quais ameaças existem (tanques? carries? cura? CC? assassinos? poke?)
-3. Com base nisso, escolha O MELHOR path de runa e build do banco de dados para ESSA partida específica
-4. Liste ITENS SITUACIONAIS que devem ser adicionados/trocados baseado nos inimigos
-5. Explique brevemente POR QUÊ cada escolha foi feita baseado nos inimigos
+1. Analise o time INIMIGO acima
+2. Identifique ameaças (tanques? carries? cura? CC? assassinos? poke? escudos?)
+3. Escolha O MELHOR path de runa e build para ESSA partida
+4. Use os itens situacionais PRÉ-CALCULADOS acima — eles já estão corretos para a classe do campeão
+5. Explique BREVEMENTE por que cada escolha se aplica aos inimigos listados
 
-NUNCA dê a build padrão sem analisar os inimigos. SEMPRE justifique as escolhas.
-Responda em português brasileiro de forma clara e direta.
-
-Pergunta do jogador: ${question}`;
+Responda em português brasileiro.
+Pergunta: ${question}`;
 
     const resp = await axios.post("https://api.groq.com/openai/v1/chat/completions",
-      { model:"llama-3.3-70b-versatile", max_tokens:1000, temperature:0.15,
+      { model:"llama-3.3-70b-versatile", max_tokens:1100, temperature:0.15,
         messages:[
-          { role:"system", content:"Coach Challenger de LoL. Analise SEMPRE o time inimigo antes de recomendar runas e itens. Use os dados do banco como base mas adapte conforme os inimigos. Responda em português brasileiro." },
+          { role:"system", content:`Coach Challenger de LoL. REGRA CRÍTICA: respeite sempre a classe do campeão ao sugerir itens situacionais. Classe "${classe||"desconhecida"}": ${
+            classe==="adc"||classe==="adc_onhit" ? "campeão AD — anti-cura = Lembrete Mortal, NUNCA Morellonomicon" :
+            classe==="mago"||classe==="assassino_ap"||classe==="mago_top" ? "campeão AP — anti-cura = Morellonomicon, NUNCA Lembrete Mortal" :
+            classe==="assassino_ad" ? "assassino AD — anti-cura = Faca Chempunk/Lembrete Mortal, NUNCA Morellonomicon" :
+            classe==="lutador" ? "lutador físico — anti-cura = Faca Chempunk ou Thornmail, NUNCA Morellonomicon" :
+            classe==="tank" ? "tank — anti-cura = Armadura de Espinhos, NUNCA Morellonomicon ou Lembrete Mortal" :
+            "respeite a classe ao sugerir itens"
+          }. Responda em português brasileiro.` },
           { role:"user", content:prompt }
         ] },
       { headers:{ Authorization:`Bearer ${GROQ_KEY}`, "Content-Type":"application/json" }, timeout:30000 }
     );
-    res.json({ text: resp.data.choices[0].message.content, patch });
+    res.json({ text: resp.data.choices[0].message.content, patch, classe });
   } catch(e) {
     const d = e.response?.data||e.message;
     console.log("ERRO /oracle:", JSON.stringify(d));
