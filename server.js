@@ -16,7 +16,7 @@ const CACHE = new Map();
 const TTL = {
   patch:   6  * 3600_000,
   dd:      12 * 3600_000,
-  lol:     2  * 3600_000,
+  lol:     30 * 60_000,  // 30min — pool de picks é estável
   riot:    4  * 3600_000,
 };
 function cacheGet(k)       { const e = CACHE.get(k); return e && Date.now()-e.ts < e.ttl ? e.v : null; }
@@ -680,6 +680,160 @@ function adaptarBuildParaAmeaca(items, ameaca, minhaClasse) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════
+// MOTOR DE PICK — pool por rota + scoring avançado (server-side, sem IA)
+// Pool = tier S/A do lolalytics Challenger, atualizado manualmente por patch
+// ═══════════════════════════════════════════════════════════════════════
+const CHAMP_POOL = {
+  top: [
+    "Aatrox","Camille","Darius","Fiora","Garen","Gnar","Gwen","Irelia",
+    "Jax","Jayce","Kayle","Kennen","KSante","Mordekaiser","Ornn","Renekton",
+    "Riven","Rumble","Sett","Shen","Sion","Trundle","Urgot","Vayne","Volibear",
+    "Yorick","Malphite","Maokai","Nasus","Teemo","Illaoi","Ambessa",
+  ],
+  jungle: [
+    "Amumu","BelVeth","Briar","Diana","Elise","Evelynn","Fiddlesticks",
+    "Graves","Hecarim","Ivern","JarvanIV","Kayn","KhaZix","Kindred",
+    "LeeSin","Lillia","MasterYi","Nidalee","Nocturne","Nunu","RekSai",
+    "Rengar","Sejuani","Shaco","Shyvana","Skarner","Taliyah","Udyr","Vi",
+    "Volibear","Warwick","Wukong","XinZhao","Zac","Karthus","Viego",
+  ],
+  mid: [
+    "Ahri","Akali","Akshan","AurelionSol","Aurora","Azir","Cassiopeia",
+    "Corki","Ekko","Fizz","Galio","Hwei","Kassadin","Katarina","LeBlanc",
+    "Lissandra","Lux","Malzahar","Naafiri","Orianna","Qiyana","Ryze",
+    "Syndra","Sylas","Talon","TwistedFate","Veigar","VelKoz","Vex","Viktor",
+    "Vladimir","Xerath","Yasuo","Yone","Zed","Ziggs","Zoe","Neeko",
+  ],
+  adc: [
+    "Aphelios","Ashe","Caitlyn","Draven","Ezreal","Jhin","Jinx","KaiSa",
+    "Kalista","KogMaw","Lucian","MissFortune","Nilah","Samira","Senna",
+    "Sivir","Smolder","Tristana","Twitch","Varus","Vayne","Xayah","Zeri",
+  ],
+  support: [
+    "Alistar","Bard","Blitzcrank","Brand","Braum","Janna","Karma","Leona",
+    "Lulu","Milio","Morgana","Nami","Nautilus","Pyke","Rakan","Rell",
+    "Renata","Seraphine","Sona","Soraka","Swain","TahmKench","Taric",
+    "Thresh","Yuumi","Zilean","Zyra",
+  ],
+};
+
+// Synergy map — campeões que potencializam cada suporte/carry
+const SYNERGY_BONUS = {
+  // ADC → suporte com melhor sinergia
+  Jinx:      { Thresh:+3, Nautilus:+2, Lulu:+3, Soraka:+2 },
+  Caitlyn:   { Lux:+4, Morgana:+3, Karma:+2 },
+  Jinx:      { Lulu:+4, Thresh:+3, Blitzcrank:+2 },
+  KaiSa:     { Nautilus:+4, Thresh:+3, Blitzcrank:+3, Rakan:+3 },
+  Xayah:     { Rakan:+6 },
+  Samira:    { Nautilus:+4, Leona:+3, Alistar:+3, Thresh:+2 },
+  Lucian:    { Nami:+5, Lulu:+3, Senna:+3 },
+  Ezreal:    { Yuumi:+4, Lulu:+3, Janna:+2 },
+  Twitch:    { Lulu:+5, Yuumi:+4, Karma:+2 },
+  // SUP → ADC com melhor sinergia
+  Blitzcrank:{ Caitlyn:+4, Jinx:+2, Draven:+3 },
+  Thresh:    { KaiSa:+3, Jinx:+3, Lucian:+2, Samira:+2 },
+  Leona:     { Samira:+4, Caitlyn:+2, KaiSa:+2 },
+  Nautilus:  { KaiSa:+4, Samira:+3, Xayah:+2 },
+  Lulu:      { Jinx:+4, Twitch:+5, KogMaw:+5, Ezreal:+2 },
+};
+
+// Contagem de score de sinergia entre aliados e o campeão
+function calcSynergyBonus(champ, allies) {
+  let bonus = 0;
+  for (const ally of allies) {
+    const allyMap  = SYNERGY_BONUS[ally]  || {};
+    const champMap = SYNERGY_BONUS[champ] || {};
+    bonus += allyMap[champ]  || 0;
+    bonus += champMap[ally]  || 0;
+  }
+  return Math.min(bonus, 8); // cap de +8 para não dominar o score
+}
+
+// Score de composição — bônus/penalidade baseada no arquétipo inimigo
+function calcCompScore(champ, compTypes) {
+  const COMP_BONUSES = {
+    // campeões que counterm engage duro
+    engage_duro:   { Malphite:+4, Kennen:+3, Rumble:+3, Lissandra:+3, Janna:+4, Morgana:+3, Yasuo:+4, Yone:+4 },
+    // campeões que counterm poke
+    poke:          { Vladimir:+3, Kassadin:+3, Mordekaiser:+3, Diana:+2, Fizz:+2 },
+    // campeões que counterm assassinos
+    assassino:     { Malzahar:+4, Lissandra:+3, Galio:+3, Leona:+2, Nautilus:+2 },
+    // campeões que counterm time de cura pesada
+    cura_pesada:   { Veigar:+2, Karthus:+2 }, // precisam de Morellonomicon de qualquer forma
+    // campeões que dominam teamfight
+    teamfight:     { Orianna:+4, Azir:+3, Amumu:+3, Malphite:+4, Kennen:+3, Fiddlesticks:+4 },
+    // campeões que counterm split push
+    split_push:    { Shen:+4, TwistedFate:+3, Nocturne:+3 },
+  };
+  let bonus = 0;
+  for (const type of compTypes) {
+    const map = COMP_BONUSES[type] || {};
+    bonus += map[champ] || 0;
+  }
+  return Math.min(bonus, 6);
+}
+
+/**
+ * Motor principal de pick.
+ * 1. Busca WR vs cada inimigo em paralelo (lolalytics)
+ * 2. Aplica penalidade para matchups ruins (worst WR)
+ * 3. Bônus de sinergia com aliados
+ * 4. Bônus de comp (arquétipo inimigo)
+ * 5. Retorna TOP 5 ordenados por score
+ */
+async function calcularMelhorPick({ role, allies, enemies }) {
+  const lane    = LANE_MAP[role?.toLowerCase()] || "mid";
+  const pool    = CHAMP_POOL[lane] || CHAMP_POOL.mid;
+  const enemyList = parseChampList(enemies).slice(0, 5);
+  const allyList  = parseChampList(allies).slice(0, 4);
+  const compAnalysis = analisarComp(enemies);
+
+  if (enemyList.length < 1) return [];
+
+  console.log(`[Pick Engine] role=${lane} pool=${pool.length} enemies=${enemyList.length}`);
+
+  // Busca todos os matchups em paralelo (pool × enemies)
+  const allResults = await Promise.all(
+    pool.map(async (champ) => {
+      const vsPromises = enemyList.map(enemy => lolalyticsVs(champ, enemy, lane));
+      const vsData     = (await Promise.all(vsPromises)).filter(Boolean);
+
+      if (vsData.length === 0) return null;
+
+      // WR médio vs inimigos com dados
+      const avgWR  = vsData.reduce((acc, v) => acc + v.wr, 0) / vsData.length;
+      // Penaliza matchup mais difícil (worst case)
+      const worstWR = Math.min(...vsData.map(v => v.wr));
+      // Base score: 70% avg, 30% worst (penaliza hard counters)
+      const baseScore = avgWR * 0.7 + worstWR * 0.3;
+      // Bônus de sinergia com aliados
+      const synergy   = calcSynergyBonus(champ, allyList);
+      // Bônus de comp
+      const compBonus = calcCompScore(champ, compAnalysis.tipos || []);
+      // Score final
+      const score = baseScore + synergy + compBonus;
+
+      return {
+        champ,
+        score:    Math.round(score * 10) / 10,
+        avgWR:    Math.round(avgWR  * 10) / 10,
+        worstWR:  Math.round(worstWR * 10) / 10,
+        synergy,
+        compBonus,
+        vsCount:  vsData.length,
+        vsDetail: vsData.map(v => ({ vs: v.enemy, wr: v.winRate || v.wr, n: v.games })),
+      };
+    })
+  );
+
+  return allResults
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
 // ROTAS
 // ═══════════════════════════════════════════════════════════════════════
 app.get("/", async (req, res) => {
@@ -721,6 +875,16 @@ app.post("/oracle", async (req, res) => {
     // Análise de composição
     const compAnalysis = analisarComp(enemies);
     const allyAnalysis = analisarComp(allies);
+
+    // ── MOTOR DE PICK (server-side, sem IA) ──
+    // Só roda quando: não há campeão selecionado E há pelo menos 2 inimigos
+    const isBestPickQ = /melhor pick|qual pick|best pick|qual campe|o que jogar|o que pick/i.test(question);
+    let bestPicks = [];
+    if (isBestPickQ && enemyList.length >= 2) {
+      console.log("[Pick Engine] Calculando...");
+      bestPicks = await calcularMelhorPick({ role, allies, enemies });
+      console.log("[Pick Engine] Top picks:", bestPicks.map(p => p.champ + "(" + p.score + ")").join(", "));
+    }
 
     // Itens situacionais server-side
     const { items: sitItems, runas: sitRunas } = situacionaisPorClasse(classe, enemies, allies);
@@ -817,37 +981,56 @@ app.post("/oracle", async (req, res) => {
       sections.push('Dados insuficientes para definir build final — use lolalytics acima como referência.');
     }
 
+        // ── Melhores picks calculados pelo motor (não pela IA) ──
+    if (bestPicks.length) {
+      sections.push("\n━━ MELHORES PICKS CALCULADOS PELO SISTEMA (NÃO PELA IA) ━━");
+      sections.push("Score = WR médio × 0.7 + worst WR × 0.3 + sinergia + comp bonus");
+      bestPicks.forEach((p, i) => {
+        const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : "  ";
+        const vsStr = (p.vsDetail || []).map(v => `vs ${v.vs}: ${v.wr}%`).join(" | ");
+        sections.push(`${medal} ${i+1}. ${p.champ}`);
+        sections.push(`   Score: ${p.score} | WR médio: ${p.avgWR}% | Pior matchup: ${p.worstWR}%`);
+        if (p.synergy > 0)   sections.push(`   Bônus sinergia: +${p.synergy} (aliados complementam)`);
+        if (p.compBonus > 0) sections.push(`   Bônus composição: +${p.compBonus} (countera a comp)`);
+        if (vsStr) sections.push(`   Matchups: ${vsStr}`);
+      });
+      sections.push("⚠️ IA deve explicar o 1° pick acima. NÃO pode escolher outro campeão.");
+    }
+
         const dataBlock = sections.join("\n");
 
     // ─────────────────────────────────────────────────────────────────
     // Detecta tipo de pergunta
     // ─────────────────────────────────────────────────────────────────
-    const isBestPick = /melhor pick|melhor campe|qual pick|best pick|composição|counter|qual jog/i.test(question);
-    const bestPickFmt = isBestPick ? `
-FORMATO OBRIGATÓRIO:
-🏆 MELHOR PICK PARA ESSA COMPOSIÇÃO
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-**[CAMPEÃO RECOMENDADO]** — [Rota]
+    const isBestPick = isBestPickQ; // reusa flag calculada acima
+    const bestPickFmt = (isBestPick && bestPicks.length > 0) ? `
+FORMATO OBRIGATÓRIO PARA MELHOR PICK:
+(O sistema já calculou os melhores picks acima — você DEVE usar o 1° da lista)
 
-✅ POR QUÊ É O MELHOR:
-• [motivo 1 — resposta ao time INIMIGO]
-• [motivo 2 — sinergia com time ALIADO]
-• [motivo 3 — se ADC, mencione sinergia com suporte aliado]
+🏆 MELHOR PICK CALCULADO PELO SISTEMA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**[USE O 1° PICK DA LISTA ACIMA]** — [Rota informada]
 
-📊 DADOS QUE CONFIRMAM:
-• WR vs comp inimiga: X% (se disponível)
-• WR com suporte aliado: X% (se disponível)
+📊 POR QUE O SISTEMA ESCOLHEU ESSE CAMPEÃO:
+• Score calculado: [score do 1° pick]
+• WR médio vs inimigos: [avgWR]%
+• Pior matchup: [worstWR]%
+• Sinergia com aliados: [mencione aliados que combinam]
 
-⚔️ COMO VENCE OS INIMIGOS:
-• [matchup principal]
-• [como lidar com ameaça maior]
+✅ COMO VENCE ESSA COMPOSIÇÃO:
+• [matchup vs principal ameaça inimiga]
+• [por que a composição inimiga não countera esse pick]
 
-🔄 ALTERNATIVAS (se principal estiver banido):
-• 2° pick: [campeão] — [motivo]
-• 3° pick: [campeão] — [motivo]
+🔄 ALTERNATIVAS (2° e 3° da lista):
+• 2°: [2° pick da lista] — [motivo breve baseado no score]
+• 3°: [3° pick da lista] — [motivo breve]
 
-❌ EVITE JOGAR: [campeões ruins nessa composição específica]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` : "";
+❌ EVITE: [picks com score baixo ou hard countered pelos inimigos]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REGRA: use EXATAMENTE os campeões da lista calculada. NÃO invente outros.` : isBestPick ? `
+O sistema não encontrou dados suficientes para calcular picks.
+Analise a composição e sugira 3 picks justificados com dados.` : "";
 
     // Anti-hallucination system rule (Ponto 1 do documento)
     const antiHallClass = {
