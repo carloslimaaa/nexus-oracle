@@ -620,6 +620,65 @@ function parseChampList(str) {
   return str.split(/[,;/]+/).map(s => s.trim()).filter(Boolean);
 }
 
+// ── Ponto 2: sanitizeBuild — valida itens contra Data Dragon ──
+function sanitizeBuild(builds, validItemsMap) {
+  if (!builds?.length || !validItemsMap) return builds || [];
+  const validSet = new Set(Object.values(validItemsMap));
+  return builds
+    .map(b => ({
+      ...b,
+      items: (b.items || []).filter(i => {
+        if (!i || typeof i !== "string") return false;
+        if (validSet.has(i)) return true;
+        const lower = i.toLowerCase();
+        return [...validSet].some(v => v.toLowerCase() === lower);
+      }),
+    }))
+    .filter(b => b.items.length >= 3);
+}
+
+// ── Ponto 3: escolherBuildPorMatchup ──
+function escolherBuildPorMatchup(builds, vsData) {
+  if (!builds?.length) return null;
+  const hasBadMatchup = (vsData || []).some(v => v.wr < 48);
+  return [...builds].sort((a, b) => {
+    const scoreA = hasBadMatchup
+      ? (a.winRate||0)*0.8 + (a.pickRate||0)*0.2
+      : (a.pickRate||0)*0.6 + (a.winRate||0)*0.4;
+    const scoreB = hasBadMatchup
+      ? (b.winRate||0)*0.8 + (b.pickRate||0)*0.2
+      : (b.pickRate||0)*0.6 + (b.winRate||0)*0.4;
+    return scoreB - scoreA;
+  })[0];
+}
+
+// ── Detectar ameaça "fed" ──
+function detectarAmeaca(killsMap) {
+  if (!killsMap || !Object.keys(killsMap).length) return null;
+  const ameacas = Object.entries(killsMap)
+    .filter(([, kda]) => (kda.kills||0) >= 5 && (kda.deaths||0) <= 2)
+    .sort(([,a],[,b]) => b.kills - a.kills);
+  if (!ameacas.length) return null;
+  const [nome, kda] = ameacas[0];
+  return { nome, kills: kda.kills, deaths: kda.deaths, classe: getClasse(nome) };
+}
+
+// ── Adapta slot 6 da build com counter para ameaça ──
+function adaptarBuildParaAmeaca(items, ameaca, minhaClasse) {
+  if (!ameaca || !items?.length) return items;
+  const counterMap = {
+    assassino_ad: { adc:"Guardião Mortal", mago:"Ampulheta de Zhonya", enchanter:"Vigilância Locket", _:"Guardião Mortal" },
+    tank:         { adc:"Lembrete Mortal", mago:"Bastão do Vazio", lutador:"Faca Chempunk Serrilhada", _:"Lembrete Mortal" },
+    mago:         { adc:"Mercurial Scimitar", lutador:"Força da Natureza", tank:"Véu da Banshee", _:"Véu da Banshee" },
+    assassino_ap: { adc:"Mercurial Scimitar", lutador:"Cimitarra Mercurial", _:"Ampulheta de Zhonya" },
+    lutador:      { adc:"Lembrete Mortal", mago:"Morellonomicon", tank:"Armadura de Espinhos", _:"Faca Chempunk Serrilhada" },
+  };
+  const map  = counterMap[ameaca.classe] || {};
+  const item = map[minhaClasse] || map._ ;
+  if (!item || items.includes(item)) return items;
+  return [...items.slice(0, 5), item];
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // ROTAS
 // ═══════════════════════════════════════════════════════════════════════
@@ -665,6 +724,22 @@ app.post("/oracle", async (req, res) => {
 
     // Itens situacionais server-side
     const { items: sitItems, runas: sitRunas } = situacionaisPorClasse(classe, enemies, allies);
+
+    // ── Ponto 2: sanitizar builds contra Data Dragon (remove itens inventados) ──
+    const itemsMap = await getDDItems();
+    if (llBase?.builds) llBase.builds = sanitizeBuild(llBase.builds, itemsMap);
+    if (otpData?.builds) otpData.builds = sanitizeBuild(otpData.builds, itemsMap);
+
+    // ── Ponto 3: escolher a melhor build com base no matchup ──
+    // Prioridade: OTP Challenger > lolalytics
+    const buildFinal = escolherBuildPorMatchup(otpData?.builds, compData.vsData)
+                    || escolherBuildPorMatchup(llBase?.builds,  compData.vsData);
+
+    // ── Ameaça fed (se front enviar KDA) ──
+    const killsMap  = context.killsMap || {};
+    const ameacaFed = detectarAmeaca(killsMap);
+    const buildFinalItems = adaptarBuildParaAmeaca(buildFinal?.items, ameacaFed, classe);
+
 
     // ─────────────────────────────────────────────────────────────────
     // FORMATA TUDO PARA O PROMPT
@@ -729,7 +804,20 @@ app.post("/oracle", async (req, res) => {
       sitRunas.forEach(x => sections.push("  " + x));
     }
 
-    const dataBlock = sections.join("\n");
+
+    // ── Ponto 4: build final travada — IA apenas explica, não escolhe ──
+    if (buildFinalItems?.length) {
+      sections.push('\n━━ BUILD FINAL DEFINIDA PELO SISTEMA (NÃO ALTERAR) ━━');
+      sections.push('⚠️  A IA DEVE APENAS EXPLICAR ESTA BUILD. PROIBIDO MODIFICAR OS ITENS.');
+      buildFinalItems.forEach((it, i) => sections.push(`  ${i+1}. ${it}`));
+      if (buildFinal?.winRate) sections.push(`  WR: ${buildFinal.winRate}% | Source: ${buildFinal.label || 'lolalytics'}`);
+      if (ameacaFed) sections.push(`  ⚠️  Slot 6 adaptado para ameaça: ${ameacaFed.nome} (${ameacaFed.kills}/${ameacaFed.deaths}) — ${ameacaFed.classe}`);
+    } else {
+      sections.push('\n━━ BUILD FINAL ━━');
+      sections.push('Dados insuficientes para definir build final — use lolalytics acima como referência.');
+    }
+
+        const dataBlock = sections.join("\n");
 
     // ─────────────────────────────────────────────────────────────────
     // Detecta tipo de pergunta
@@ -761,17 +849,28 @@ FORMATO OBRIGATÓRIO:
 ❌ EVITE JOGAR: [campeões ruins nessa composição específica]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` : "";
 
+    // Anti-hallucination system rule (Ponto 1 do documento)
+    const antiHallClass = {
+      adc:         'CAMPEÃO AD — anti-cura: LEMBRETE MORTAL. PROIBIDO: Morellonomicon, itens AP.',
+      mago:        'CAMPEÃO AP — anti-cura: MORELLONOMICON. PROIBIDO: Lembrete Mortal, itens AD.',
+      assassino_ap:'CAMPEÃO AP — anti-cura: MORELLONOMICON. PROIBIDO: Lembrete Mortal, itens AD.',
+      assassino_ad:'ASSASSINO AD — anti-cura: FACA CHEMPUNK. PROIBIDO: Morellonomicon.',
+      lutador:     'LUTADOR AD — anti-cura: FACA CHEMPUNK/THORNMAIL. PROIBIDO: Morellonomicon.',
+      tank:        'TANK — anti-cura: ARMADURA DE ESPINHOS. PROIBIDO: Morellonomicon e Lembrete Mortal.',
+    };
     const systemRule = [
-      `Coach Challenger de LoL. Classe do campeão: "${classe}".`,
-      classe==="adc" ? "CAMPEÃO AD: anti-cura = LEMBRETE MORTAL (NUNCA Morellonomicon). Nunca sugira itens AP." : "",
-      ["mago","assassino_ap"].includes(classe) ? "CAMPEÃO AP: anti-cura = MORELLONOMICON (NUNCA Lembrete Mortal). Nunca sugira itens AD." : "",
-      classe==="assassino_ad" ? "ASSASSINO AD: anti-cura = FACA CHEMPUNK (NUNCA Morellonomicon)." : "",
-      classe==="lutador" ? "LUTADOR: anti-cura = FACA CHEMPUNK ou THORNMAIL (NUNCA Morellonomicon)." : "",
-      classe==="tank" ? "TANK: anti-cura = ARMADURA DE ESPINHOS (NUNCA Morellonomicon ou Lembrete Mortal)." : "",
-      "Ao sintetizar as fontes: priorize OTPs Challenger > lolalytics > conhecimento geral.",
-      "Sempre justifique as escolhas com base na composição inimiga desta partida.",
-      "Responda em português brasileiro.",
-    ].filter(Boolean).join(" ");
+      'Você é um analista profissional de League of Legends.',
+      'REGRAS CRÍTICAS (NUNCA QUEBRE):',
+      '- NÃO invente itens, runas ou builds.',
+      '- NÃO mencione itens que não estão na lista fornecida no prompt.',
+      '- NÃO use conhecimento externo — use APENAS os dados fornecidos.',
+      '- Se não houver dados suficientes, diga claramente.',
+      '- A BUILD FINAL foi definida pelo sistema. Você NÃO pode alterá-la.',
+      '- Você apenas explica o motivo da build escolhida.',
+      `CLASSE: ${classe} — ${antiHallClass[classe]||'respeite a classe.'}`,
+      'Prioridade de fonte: OTPs Challenger > lolalytics > conhecimento geral.',
+      'Responda em português brasileiro.',
+    ].join(' ');
 
     const prompt = `${dataBlock}
 
@@ -780,11 +879,13 @@ ${bestPickFmt}
 Pergunta: ${question}
 
 TAREFA:
-1. Analise a composição inimiga acima e identifique as maiores ameaças
-2. Analise a sinergia com o time aliado
-3. Com base em TODOS os dados coletados (lolalytics + OTPs + matchups), sintetize em UMA ÚNICA recomendação de build e runas para ESTA partida específica
-4. Aplique os ajustes situacionais pré-calculados acima
-5. Justifique cada escolha com referência à composição inimiga
+1. A BUILD FINAL acima foi escolhida pelo sistema — NÃO altere os itens listados
+2. Explique POR QUÊ essa build funciona contra a composição inimiga desta partida
+3. Mencione os ajustes situacionais usando APENAS itens que estão no prompt
+4. Se for pergunta de melhor pick: use o formato definido acima
+5. Seja direto — máximo 3 parágrafos de explicação
+
+PROIBIDO: criar itens inexistentes, alterar a build final, sugerir itens fora das listas fornecidas.
 
 Patch: ${patch}`;
 
