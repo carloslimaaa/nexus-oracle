@@ -365,6 +365,115 @@ async function getPatch() {
   return cachedPatch;
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA DRAGON PT-BR — nomes reais de itens e runas em português
+// ═══════════════════════════════════════════════════════════════════════════════
+let PTBR_ITEMS = null;  // id → name (PT-BR)
+let PTBR_RUNES = null;  // id → name (PT-BR)
+let PTBR_ITEMS_BY_NAME = null; // lowercase-name-en → name-ptbr
+
+async function getPTBRItems() {
+  if (PTBR_ITEMS) return PTBR_ITEMS;
+  try {
+    const patch = await getPatch();
+    const r = await axios.get(
+      `https://ddragon.leagueoflegends.com/cdn/${patch}/data/pt_BR/item.json`,
+      { timeout: 8000 }
+    );
+    PTBR_ITEMS = {};
+    PTBR_ITEMS_BY_NAME = {};
+    for (const [id, item] of Object.entries(r.data?.data || {})) {
+      PTBR_ITEMS[id] = item.name;
+      PTBR_ITEMS_BY_NAME[item.name.toLowerCase()] = item.name;
+    }
+    // Also fetch EN for cross-reference
+    const enR = await axios.get(
+      `https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/item.json`,
+      { timeout: 8000 }
+    );
+    for (const [id, item] of Object.entries(enR.data?.data || {})) {
+      PTBR_ITEMS_BY_NAME[item.name.toLowerCase()] = PTBR_ITEMS[id] || item.name;
+    }
+    console.log(`[DD] Itens PT-BR carregados: ${Object.keys(PTBR_ITEMS).length}`);
+  } catch (e) {
+    PTBR_ITEMS = {};
+    PTBR_ITEMS_BY_NAME = {};
+    console.log('[DD] Falha ao carregar itens PT-BR:', e.message?.slice(0,50));
+  }
+  return PTBR_ITEMS;
+}
+
+async function getPTBRRunes() {
+  if (PTBR_RUNES) return PTBR_RUNES;
+  try {
+    const patch = await getPatch();
+    const r = await axios.get(
+      `https://ddragon.leagueoflegends.com/cdn/${patch}/data/pt_BR/runesReforged.json`,
+      { timeout: 8000 }
+    );
+    PTBR_RUNES = {};
+    for (const tree of (r.data || [])) {
+      PTBR_RUNES[tree.key] = tree.name;
+      PTBR_RUNES[tree.name.toLowerCase()] = tree.name;
+      for (const row of (tree.slots || []))
+        for (const rune of (row.runes || [])) {
+          PTBR_RUNES[rune.key] = rune.name;
+          PTBR_RUNES[rune.id]  = rune.name;
+          PTBR_RUNES[rune.name.toLowerCase()] = rune.name;
+        }
+    }
+    console.log(`[DD] Runas PT-BR carregadas: ${Object.keys(PTBR_RUNES).length}`);
+  } catch (e) {
+    PTBR_RUNES = {};
+    console.log('[DD] Falha ao carregar runas PT-BR:', e.message?.slice(0,50));
+  }
+  return PTBR_RUNES;
+}
+
+// Valida e traduz nome de item para PT-BR real
+// Retorna: nome PT-BR oficial | nome original com tag (EN) | nome original
+function validateItemName(name) {
+  if (!name || typeof name !== 'string') return name;
+  if (!PTBR_ITEMS_BY_NAME) return name;
+  const lo = name.toLowerCase().trim();
+  // Match exato PT-BR
+  if (PTBR_ITEMS_BY_NAME[lo]) return PTBR_ITEMS_BY_NAME[lo];
+  // Match parcial (primeiras 5 letras)
+  const partial = Object.keys(PTBR_ITEMS_BY_NAME).find(k => k.startsWith(lo.slice(0,5)));
+  if (partial) return PTBR_ITEMS_BY_NAME[partial];
+  // Não encontrado — retorna original com flag
+  return name; // mantém como está (pode ser nome EN válido)
+}
+
+function validateRuneName(name) {
+  if (!name || typeof name !== 'string') return name;
+  if (!PTBR_RUNES) return name;
+  return PTBR_RUNES[name.toLowerCase()] || PTBR_RUNES[name] || name;
+}
+
+// Sanitiza build completa contra DD PT-BR
+async function sanitizeBuildDD(build) {
+  await getPTBRItems();
+  return (build || []).map(validateItemName);
+}
+
+async function sanitizeRunesDD(runes) {
+  await getPTBRRunes();
+  if (!runes) return runes;
+  return {
+    ...runes,
+    key: validateRuneName(runes.key),
+    p:   validateRuneName(runes.p),
+    r1:  validateRuneName(runes.r1),
+    r2:  validateRuneName(runes.r2),
+    r3:  validateRuneName(runes.r3),
+    s:   validateRuneName(runes.s),
+    s1:  validateRuneName(runes.s1),
+    s2:  validateRuneName(runes.s2),
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ROTAS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -509,6 +618,25 @@ ${(pick1Data?.build || []).map((it, i) => `  ${i+1}. ${it}`).join("\n")}
 //   deep (a cada 15s): IA textual (llama-3.3, sem limite free)
 // Debounce server-side para o modo deep
 
+// ── Dicas extras contextuais (complementam a ação principal) ─────────────────
+function gerarDicasExtras(min, enemies, allies) {
+  const e = (enemies||"").toLowerCase();
+  const dicas = [];
+
+  // Ameaças
+  if (/soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|sylas/.test(e)) dicas.push("⚕️ Time inimigo tem cura: compre anti-cura antes de lutar");
+  if (/malphite|amumu|leona|nautilus|blitzcrank|alistar|sejuani/.test(e)) dicas.push("⚠️ Engage pesado inimigo: não ande sozinho longe da torre");
+  if (/zed|talon|rengar|khazix|akali|diana|nocturne|evelynn/.test(e)) dicas.push("🔪 Assassino inimigo: guarde Flash e jogue encostado nos aliados");
+  if (/jayce|zoe|syndra|xerath|vel|nidalee|ezreal|lux|caitlyn/.test(e)) dicas.push("🎯 Poke inimigo: use minions como escudo, jogue no extremo do range");
+  if (/camille|fiora|jax|tryndamere|yorick|nasus/.test(e)) dicas.push("🗡️ Split push inimigo: não deixe 1v1 — envie alguém ou group 4-1");
+
+  // Objetivos por fase
+  if (min >= 14 && min <= 20 && dicas.length < 2) dicas.push("🐉 Prepare visão para objetivos: Alma/Baron em disputa");
+  if (min >= 5  && min <= 7  && dicas.length < 2) dicas.push("🏹 First blood ainda disponível: jogue agressivo com vantagem de farm");
+
+  return dicas.slice(0, 3);
+}
+
 // ── Ação contextual por estado real do jogo ─────────────────────────────────
 // Analisa: minuto + composição inimiga + pick selecionado → gera recomendação real
 function gerarAcaoContextual(min, champion, enemies, allies, bestPick) {
@@ -606,16 +734,8 @@ app.post("/analyze", async (req, res) => {
     const patch = await getPatch();
     const min   = parseInt(gameTime) || 0;
 
-    // ── Dicas de tempo (rule-based, sempre) ──
-    const tips = [];
-    if (min>=1  && min<=2)  tips.push("Plante sentinela no tribush ou rio lateral");
-    if (min>=3  && min<=4)  tips.push("Jungle inimigo pode estar no camp vermelho — ward no rio");
-    if (min>=5  && min<=6)  tips.push("Primeiro dragão disponível — pressione bot ou prepare visão");
-    if (min>=8  && min<=10) tips.push("Segundo dragão em breve — jungle pode estar rotacionando");
-    if (min>=14 && min<=16) tips.push("Dragão da Alma disponível — prioridade máxima de objetivo");
-    if (min>=20)            tips.push("Barão Nashor ativo — ward pixel brush e entrada do pit");
-    if (min>=25)            tips.push("Late game: não ande sozinho, agrupe para objetivos");
-    if (min>=30)            tips.push("Dragão Ancião disponível — lute pelo objetivo ou ceda e recue");
+    // ── Dicas extras contextuais (complementam gerarAcaoContextual) ──
+    const tips = gerarDicasExtras(min, enemies, allies);
 
     // ── TOP 3 picks calculados (motor local, rule-based) ──
     let topPicks = [];
@@ -636,24 +756,27 @@ app.post("/analyze", async (req, res) => {
     const canDeep = (now - lastVision) >= VISION_DEBOUNCE;
 
     if (mode === "fast" || !canDeep) {
-      const obs = [...tips.slice(0, 3)];
-      const base = lastVisionCache || {
-        acao: tips[0] || "Foque no CS e posicionamento",
-        urgencia: "baixa",
-        detalhes: `Min ${min}: jogue seguro, prepare o próximo objetivo`,
-      };
-      // Gera ação contextual real baseada no estado atual do jogo
+      const obs = [...tips.slice(0, 2)];
+      // SEMPRE gerar análise fresca — nunca usar cache antigo para ação principal
       const ctxAcao = gerarAcaoContextual(min, champion, enemies, allies, bestPick?.champ);
-      if(ctxAcao) { base.acao = ctxAcao.acao; base.urgencia = ctxAcao.urgencia; base.detalhes = ctxAcao.detalhes; }
+      const base = {
+        acao:     ctxAcao?.acao     || tips[0] || "Foque no CS e posicionamento",
+        urgencia: ctxAcao?.urgencia || "baixa",
+        detalhes: ctxAcao?.detalhes || `Min ${min}: jogue seguro e observe o minimapa.`,
+      };
 
       return res.json({
         ...base,
         observacoes: obs,
-        picks: topPicks.slice(0, 3).map(p => ({
+        picks: await Promise.all(topPicks.slice(0, 3).map(async p => ({
           champ: p.champ, score: p.score, avgWR: p.avgWR, worstWR: p.worstWR,
           synergy: p.synergy, compBonus: p.compBonus,
-          data: { runes: p.data?.runes, build: p.data?.build, ini: p.data?.ini, f: p.data?.f, cls: p.data?.cls },
-        })),
+          data: {
+            runes: await sanitizeRunesDD(p.data?.runes),
+            build: await sanitizeBuildDD(p.data?.build),
+            ini: p.data?.ini, f: p.data?.f, cls: p.data?.cls
+          },
+        }))),
         best: bestPick?.champ || "",
         fonte: "rule-based",
         proximaAnalise: canDeep ? "disponível" : `${Math.round((VISION_DEBOUNCE-(now-lastVision))/1000)}s`,
@@ -739,22 +862,22 @@ app.post("/pick", async (req, res) => {
     const picks = calcularMelhorPick({ role, allies, enemies, bans });
     if (!picks.length) return res.json({ picks: [], mensagem: "Nenhum pick calculado" });
 
-    res.json({
-      picks: picks.map(p => ({
-        champ:     p.champ,
-        score:     p.score,
-        avgWR:     p.avgWR,
-        worstWR:   p.worstWR,
-        synergy:   p.synergy,
-        compBonus: p.compBonus,
-        role:      p.role,
-        runes:     p.data?.runes,
-        build:     p.data?.build,
-        ini:       p.data?.ini,
-        feiticos:  p.data?.f,
-        dicas:     p.data?.d?.slice(0, 2),
-      })),
-    });
+    // Sanitiza builds e runas contra DD PT-BR antes de retornar
+    const picksValidated = await Promise.all(picks.map(async p => ({
+      champ:     p.champ,
+      score:     p.score,
+      avgWR:     p.avgWR,
+      worstWR:   p.worstWR,
+      synergy:   p.synergy,
+      compBonus: p.compBonus,
+      role:      p.role,
+      runes:     await sanitizeRunesDD(p.data?.runes),
+      build:     await sanitizeBuildDD(p.data?.build),
+      ini:       p.data?.ini,
+      feiticos:  p.data?.f,
+      dicas:     p.data?.d?.slice(0, 2),
+    })));
+    res.json({ picks: picksValidated });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -769,8 +892,53 @@ app.post("/champ", (req, res) => {
 });
 
 // Start
-getPatch().then(p => {
+getPatch().then(async p => {
   console.log(`Nexus Oracle v4 | patch ${p} | dataset: ${CHAMP_COUNT} campeões | IA: llama-3.3-70b`);
+  // Pre-aquece caches de Data Dragon PT-BR
+  Promise.all([getPTBRItems(), getPTBRRunes()]).catch(()=>{});
 }).catch(() => {});
+
+// ── GET /items-ptbr — nomes reais de itens PT-BR do Data Dragon ──────────────
+app.get("/items-ptbr", async (req, res) => {
+  try {
+    await getPTBRItems();
+    await getPTBRRunes();
+    const patch = await getPatch();
+    // Retorna lista de nomes válidos PT-BR para o frontend validar builds
+    const validItems = Object.values(PTBR_ITEMS_BY_NAME || {}).filter(Boolean);
+    const validRunes = Object.values(PTBR_RUNES || {}).filter(Boolean);
+    res.json({ patch, items: validItems, runes: validRunes, total: validItems.length });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /item-stats — estatísticas de itens via Data Dragon ────────────────────
+// Data Dragon tem gold cost + stats para todos os itens
+app.get("/item-stats", async (req, res) => {
+  try {
+    const patch = await getPatch();
+    // Pega dados completos de itens PT-BR com stats (gold, tags, stats)
+    const r = await axios.get(
+      `https://ddragon.leagueoflegends.com/cdn/${patch}/data/pt_BR/item.json`,
+      { timeout: 8000 }
+    );
+    const items = {};
+    for (const [id, item] of Object.entries(r.data?.data || {})) {
+      if (!item.gold?.purchasable) continue; // descarta não-compráveis
+      items[item.name] = {
+        id,
+        name:   item.name,
+        gold:   item.gold?.total || 0,
+        tags:   item.tags || [],
+        stats:  item.stats || {},
+        depth:  item.depth || 1, // 1=básico 2=intermediário 3=completo
+      };
+    }
+    res.json({ patch, items, count: Object.keys(items).length });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.listen(3000, () => console.log("Servidor na porta 3000"));

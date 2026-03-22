@@ -277,9 +277,10 @@ textarea{resize:vertical;min-height:50px;font-size:13px;}
       <span class="capture-label">Clique para capturar tela</span>
     </div>
     <div class="ocr-chips" id="ocr-chips"></div>
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <button class="btn" onclick="startCapture()" style="flex:1;font-size:11px">📷 Capturar</button>
-      <button class="btn primary" onclick="runOCR()" style="flex:1;font-size:11px">🔍 OCR</button>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+      <button class="btn" onclick="startCapture()" style="flex:1;font-size:11px;min-width:80px">📷 Capturar</button>
+      <button class="btn primary" onclick="runOCR()" style="flex:1;font-size:11px;min-width:80px">🔍 OCR</button>
+      <button class="btn" id="btn-ocr-loop" onclick="toggleOCRLoop()" style="flex:1;font-size:11px;min-width:80px">🔄 OCR Loop</button>
     </div>
   </div>
 
@@ -358,7 +359,45 @@ textarea{resize:vertical;min-height:50px;font-size:13px;}
 </div><!-- /app -->
 
 <script>
-const S={server:'',role:'mid',autoLoop:null,timerInterval:null,timerSec:0,timerOn:false,refreshCount:0,stream:null,videoEl:null,lastPicks:[],expanded:null};
+const S={server:'',role:'mid',autoLoop:null,timerInterval:null,timerSec:0,timerOn:false,refreshCount:0,stream:null,videoEl:null,lastPicks:[],expanded:null,validItems:new Set(),validRunes:new Set(),itemStats:{},ocrLoop:null};
+
+// ── Busca itens/runas PT-BR válidos do servidor ───────────────────────────────
+async function loadValidItems(){
+  if(!S.server||S.validItems.size>0)return;
+  try{
+    const r=await fetch(S.server+'/items-ptbr');
+    const d=await r.json();
+    if(d.items?.length){d.items.forEach(i=>S.validItems.add(i.toLowerCase()));console.log('[Items] PT-BR válidos:',d.items.length);}
+    if(d.runes?.length){d.runes.forEach(r=>S.validRunes.add(r.toLowerCase()));}
+  }catch(e){console.log('[Items] Fallback sem validação online');}
+}
+
+// ── Busca estatísticas de itens (gold, stats) via Data Dragon ─────────────────
+async function loadItemStats(){
+  if(!S.server||Object.keys(S.itemStats).length>0)return;
+  try{
+    const r=await fetch(S.server+'/item-stats');
+    const d=await r.json();
+    if(d.items){S.itemStats=d.items;console.log('[Items] Stats carregados:',d.count);}
+  }catch(e){}
+}
+
+// Valida item contra lista PT-BR real
+function isValidItem(name){
+  if(!name)return true;
+  if(S.validItems.size===0)return true; // sem lista ainda, não bloqueia
+  const lo=name.toLowerCase().trim();
+  if(S.validItems.has(lo))return true;
+  // fuzzy: começa com as 6 primeiras letras
+  for(const v of S.validItems){if(v.startsWith(lo.slice(0,6)))return true;}
+  return false;
+}
+function isValidRune(name){
+  if(!name)return true;
+  if(S.validRunes.size===0)return true;
+  const lo=name.toLowerCase().trim();
+  return S.validRunes.has(lo)||[...S.validRunes].some(v=>v.startsWith(lo.slice(0,6)));
+}
 
 window.addEventListener('DOMContentLoaded',()=>{
   const saved=localStorage.getItem('nx_srv');
@@ -388,6 +427,8 @@ async function testConnection(){
     document.getElementById('patch-badge').textContent='Patch '+(d.patch||'—');
     document.getElementById('btn-connect').textContent='✓ Conectado';
     document.getElementById('btn-connect').className='btn active';
+    loadValidItems();
+    loadItemStats();
   }catch(e){
     document.getElementById('status-dot').className='status-dot error';
     document.getElementById('status-label').textContent='Erro';
@@ -449,8 +490,13 @@ async function runOCR(){
     const cvs=document.getElementById('preview-canvas');
     const W=cvs.width||1920, H=cvs.height||1080;
     // Tesseract com dados de posição (words com bbox)
-    const result=await Tesseract.recognize('data:image/jpeg;base64,'+await snapFrame(),'eng',{
-      tessedit_pageseg_mode:'6' // bloco uniforme
+    // Pré-processamento: aumentar contraste antes do OCR
+    const rawB64 = await snapFrame();
+    const preprocessed = await preprocessForOCR(rawB64);
+
+    const result=await Tesseract.recognize(preprocessed,'eng',{
+      tessedit_pageseg_mode:'6', // bloco uniforme
+      tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz \''
     });
     const words=result.data.words||[];
 
@@ -486,8 +532,24 @@ async function runOCR(){
     chips.innerHTML='';
     if(!myAllies.length&&!myEnemies.length&&!unsure.length){
       chips.innerHTML='<span style="color:var(--text-dim);font-size:11px">Nenhum campeão detectado — tente com a tela de seleção visível</span>';
-      return;
+      return 0;
     }
+
+    // Detectar bans: área do topo da tela (y < 20% da altura)
+    const myBans = [];
+    words.forEach(w=>{
+      const txt=w.text.replace(/[^a-zA-Z]/g,'');
+      if(txt.length<3)return;
+      const match=CHAMPS_LIST.find(c=>{
+        const cn=c.toLowerCase().replace(/['\s.]/g,'');
+        const tn=txt.toLowerCase();
+        return tn===cn||cn.startsWith(tn.slice(0,Math.min(tn.length,6)));
+      });
+      if(!match)return;
+      const cy=(w.bbox.y0+w.bbox.y1)/2;
+      const H2=cvs.height||1080;
+      if(cy<H2*0.20&&!myBans.includes(match))myBans.push(match);
+    });
 
     // Aplica nos campos automaticamente
     if(myAllies.length){
@@ -544,10 +606,59 @@ async function runOCR(){
       chips.appendChild(chip);
     });
 
-    // Dispara análise automática se encontrou inimigos
+    // Aplica bans detectados
+    if(myBans.length){
+      const bnEl=document.getElementById('bans');
+      const cur=bnEl.value.split(',').map(x=>x.trim()).filter(Boolean);
+      myBans.forEach(c=>{if(!cur.map(x=>x.toLowerCase()).includes(c.toLowerCase()))cur.push(c);});
+      bnEl.value=cur.join(', ');
+      // Avisa se um dos picks recomendados foi banido
+      const bannedPick=S.lastPicks?.find(p=>myBans.some(b=>b.toLowerCase()===p.champ.toLowerCase()));
+      if(bannedPick){
+        const warn=document.createElement('div');
+        warn.style.cssText='color:var(--red);font-size:11px;padding:4px 0;width:100%;';
+        warn.textContent='⛔ Ban detectado: '+bannedPick.champ+' — use a alternativa #2';
+        chips.appendChild(warn);
+      }
+    }
+
+    // Dispara análise automática se encontrou inimigos (retorna contagem)
     if(myEnemies.length>=2){setTimeout(()=>runAnalysis(),300);}
+    return myAllies.length+myEnemies.length+myBans.length;
 
   }catch(e){chips.innerHTML='<span style="color:var(--red);font-size:11px">Erro OCR: '+e.message+'</span>';}
+}
+
+// Preprocessamento de imagem para melhorar OCR
+// Aumenta contraste, converte para grayscale, usa canvas para editar
+async function preprocessForOCR(b64){
+  if(!b64)return null;
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const c=document.createElement('canvas');
+      c.width=img.naturalWidth;c.height=img.naturalHeight;
+      const ctx=c.getContext('2d');
+      ctx.drawImage(img,0,0);
+      // Aplica contraste alto: aumenta legibilidade dos nomes
+      ctx.globalCompositeOperation='source-atop';
+      const idata=ctx.getImageData(0,0,c.width,c.height);
+      const data=idata.data;
+      for(let i=0;i<data.length;i+=4){
+        // Converte para grayscale
+        const gray=0.299*data[i]+0.587*data[i+1]+0.114*data[i+2];
+        // Contraste: amplifica diferença do meio-tom
+        const contrast=1.8;const intercept=128*(1-contrast);
+        const g=Math.min(255,Math.max(0,contrast*gray+intercept));
+        data[i]=data[i+1]=data[i+2]=g;
+      }
+      ctx.putImageData(idata,0,0);
+      // Retorna em alta qualidade
+      resolve(c.toDataURL('image/png'));
+    };
+    img.onerror=()=>resolve('data:image/jpeg;base64,'+b64);
+    img.src='data:image/jpeg;base64,'+b64;
+  });
 }
 
 function addToField(fieldId,champ){
@@ -556,9 +667,34 @@ function addToField(fieldId,champ){
   if(!cur.map(x=>x.toLowerCase()).includes(champ.toLowerCase())){cur.push(champ);el.value=cur.join(', ');}
 }
 
+// OCR auto-loop: roda em loop até não detectar mais campeões (fim da seleção)
+function toggleOCRLoop(){
+  if(S.ocrLoop){
+    clearInterval(S.ocrLoop);S.ocrLoop=null;
+    document.getElementById('btn-ocr-loop').textContent='🔄 OCR Loop';
+    document.getElementById('btn-ocr-loop').className='btn';
+  } else {
+    S.ocrLoop=setInterval(async()=>{
+      const detected=await runOCR();
+      if(detected===0){
+        // Nenhum campeão detectado 3x seguidas = fim da seleção
+        S.ocrLoop._noDetect=(S.ocrLoop._noDetect||0)+1;
+        if(S.ocrLoop._noDetect>=3){
+          clearInterval(S.ocrLoop);S.ocrLoop=null;
+          document.getElementById('btn-ocr-loop').textContent='🔄 OCR Loop';
+          document.getElementById('btn-ocr-loop').className='btn';
+          console.log('[OCR] Seleção encerrada — loop parado');
+        }
+      } else { S.ocrLoop._noDetect=0; }
+    },2000);
+    document.getElementById('btn-ocr-loop').textContent='⏹ Parar OCR';
+    document.getElementById('btn-ocr-loop').className='btn active';
+  }
+}
+
 function toggleAuto(){
-  if(S.autoLoop){clearInterval(S.autoLoop);S.autoLoop=null;document.getElementById('btn-auto').textContent='▶ Loop 3s';document.getElementById('btn-auto').className='btn';}
-  else{runAnalysis();S.autoLoop=setInterval(runAnalysis,3000);document.getElementById('btn-auto').textContent='⏸ Parar';document.getElementById('btn-auto').className='btn active';}
+  if(S.autoLoop){clearInterval(S.autoLoop);S.autoLoop=null;document.getElementById('btn-auto').textContent='▶ Loop 1s';document.getElementById('btn-auto').className='btn';}
+  else{runAnalysis();S.autoLoop=setInterval(runAnalysis,1000);document.getElementById('btn-auto').textContent='⏸ Parar (1s)';document.getElementById('btn-auto').className='btn active';}
 }
 
 async function runAnalysis(){
@@ -628,7 +764,7 @@ function renderPicks(picks){
       <div class="pick-expand"><div class="pick-expand-inner">
         ${d.f?`<div class="build-row"><div class="blabel">Feitiços</div><div class="spell-tags">${d.f.map(f=>`<span class="spell-tag">${f}</span>`).join('')}</div></div>`:''}
         ${runes.key?`<div class="build-row"><div class="blabel">Runas</div>
-          <div class="rune-row"><span class="rune-key">Keystone</span><span class="rune-sep">→</span><span class="rune-val" style="color:var(--gold-light)">${runes.key}</span></div>
+          <div class="rune-row"><span class="rune-key">Keystone</span><span class="rune-sep">→</span><span class="rune-val" style="color:var(--gold-light)">${runes.key}${isValidRune(runes.key)?'':'<span title=\"Runa pode não existir\" style=\"color:var(--red);font-size:9px\"> ⚠️</span>'}</span></div>
           <div class="rune-row"><span class="rune-key">${runes.p||''}</span><span class="rune-sep">·</span><span class="rune-val">${[runes.r1,runes.r2,runes.r3].filter(Boolean).join(' / ')}</span></div>
           <div class="rune-row"><span class="rune-key">${runes.s||''}</span><span class="rune-sep">·</span><span class="rune-val">${[runes.s1,runes.s2].filter(Boolean).join(' / ')}</span></div>
         </div>`:''}
@@ -650,7 +786,13 @@ function toggleCard(card){
 function showBuild(p){
   if(!p)return;
   const d=p.data||{};const build=d.build||[];const runes=d.runes||{};
-  const itemsHTML=build.map((it,i)=>`<div class="build-item-box" title="${it}"><span class="item-num">${i+1}</span><span class="item-name-short">${it}</span></div>`).join('');
+  const itemsHTML=build.map((it,i)=>{
+    const valid=isValidItem(it);
+    const warn=!valid?'border-color:rgba(231,76,60,.5);background:rgba(231,76,60,.05);':'';
+    const tag=!valid?`<span title="Item pode não existir neste patch" style="color:var(--red);font-size:9px;margin-left:4px">⚠️</span>`:'';
+    const statsEl=S.itemStats[it]?`<span style="color:var(--text-dim);font-size:10px;margin-left:auto">${S.itemStats[it].gold}g</span>`:'';
+    return `<div class="build-item-box" title="${it}${!valid?' — item não encontrado no PT-BR':''}" style="${warn}"><span class="item-num">${i+1}</span><span class="item-name-short">${it}${tag}</span>${statsEl}</div>`;
+  }).join('');
   document.getElementById('build-display').innerHTML=`
     <div class="full-build-section">
       <div class="build-champ-name">${p.champ}</div>
@@ -661,7 +803,7 @@ function showBuild(p){
       <div class="divider"></div>
       <div class="blabel">Runas</div>
       ${runes.key?`<div style="margin-bottom:10px">
-        <div class="rune-row"><span class="rune-key">Keystone</span><span class="rune-sep">→</span><span class="rune-val" style="color:var(--gold-light)">${runes.key}</span></div>
+        <div class="rune-row"><span class="rune-key">Keystone</span><span class="rune-sep">→</span><span class="rune-val" style="color:var(--gold-light)">${runes.key}${isValidRune(runes.key)?'':'<span title=\"Runa pode não existir\" style=\"color:var(--red);font-size:9px\"> ⚠️</span>'}</span></div>
         <div class="rune-row"><span class="rune-key">${runes.p||''}</span><span class="rune-sep">·</span><span class="rune-val">${[runes.r1,runes.r2,runes.r3].filter(Boolean).join(' / ')}</span></div>
         <div class="rune-row"><span class="rune-key">${runes.s||''}</span><span class="rune-sep">·</span><span class="rune-val">${[runes.s1,runes.s2].filter(Boolean).join(' / ')}</span></div>
         <div class="rune-row"><span class="rune-key">Shards</span><span class="rune-sep">·</span><span class="rune-val">${(runes.sh||[]).join(' / ')}</span></div>
