@@ -127,25 +127,74 @@ const COMP_REGEX = {
   cc_pesado:    /malzahar|nautilus|blitzcrank|leona|amumu|morgana|alistar|thresh|sion|sejuani/,
 };
 
-// Bônus de composição por campeão
+// ── Bônus de composição vs arquétipo inimigo ──────────────────────────────────
 const COMP_SCORE = {
-  engage_duro:  { malphite:4, kennen:3, rumble:3, lissandra:3, janna:4, morgana:3, yasuo:4, yone:4, vex:3 },
-  poke:         { vladimir:3, kassadin:3, mordekaiser:3, diana:2, fizz:2, vex:2 },
-  assassino:    { malzahar:4, lissandra:3, galio:3, leona:2, nautilus:2, vex:3 },
-  cura_pesada:  { veigar:2, karthus:2, zed:2 },
-  teamfight:    { orianna:4, azir:3, amumu:3, malphite:4, kennen:3, fiddlesticks:4, wukong:3 },
-  split_push:   { shen:4, twistedfate:3, nocturne:3 },
+  engage_duro:  { malphite:5, kennen:4, rumble:4, lissandra:4, janna:5, morgana:4, yasuo:5, yone:4, vex:4, zac:3, fiddlesticks:3 },
+  poke:         { vladimir:4, kassadin:4, mordekaiser:4, diana:3, fizz:3, vex:3, zed:3, akali:3 },
+  assassino:    { malzahar:5, lissandra:4, galio:4, leona:3, nautilus:3, vex:4, lulu:4, soraka:3 },
+  cura_pesada:  { veigar:3, karthus:3, zed:3, katarina:2, draven:2 },
+  teamfight:    { orianna:5, azir:4, amumu:4, malphite:5, kennen:4, fiddlesticks:5, wukong:4, jarvaniv:3 },
+  split_push:   { shen:5, twistedfate:4, nocturne:4, gangplank:3, twisted:3 },
+  carry_ad:     { malphite:4, leona:3, nautilus:3, alistar:3 }, // tanques/engage counterm ADC
+  carry_ap:     { galio:4, kassadin:4, ksante:3, malphite:3 }, // MR picks vs AP heavy
+  cc_pesado:    { olaf:5, gangplank:4, kaisa:3, garen:3 }, // CC immune/cleanse vs CC chain
+  escudos:      { veigar:3, kaisa:3, zed:3, draven:3 }, // vs shield comps (burst first)
 };
 
-function calcCompBonus(champKey, enemies) {
+// ── Fase do jogo: early/late power ────────────────────────────────────────────
+// Bonus quando a composição inimiga é early ou late dominant
+const PHASE_POWER = {
+  // early dominant (comps com alto DPS/poke early → picks late safe são penalizados)
+  // late dominant (comps de scaling → picks early aggressive são valorizados)
+  early: ["draven","renekton","darius","jayce","camille","leesin","elise","graves","nidalee","caitlyn","lucian","pantheon","riven"],
+  late:  ["kayle","kassadin","Vladimir","nasus","veigar","jinx","kogmaw","twitch","smolder","azir","orianna","tryndamere","tristana"],
+  scaling:["cassiopeia","ryze","aurelionsol","viktor","veigar","lissandra","anivia","swain","mordekaiser"],
+};
+
+// Bonus de completude de composição com aliados
+const ARCHETYPE_NEEDS = {
+  // se time aliado não tem X, dar bônus para picks desse tipo
+  tank:     { malphite:4, amumu:4, maokai:3, ornn:4, zac:3, chogath:3, malzahar:3 },
+  engage:   { malphite:4, amumu:3, zac:3, leona:3, nautilus:3, alistar:3 },
+  ap:       { orianna:3, azir:3, syndra:3, veigar:3, ahri:3, lux:3, hwei:3 },
+  ad:       { zed:3, talon:3, khazix:3, rengar:3, graves:3, draven:3 },
+  enchanter:{ lulu:4, soraka:4, nami:3, janna:3, milio:3, yuumi:3 },
+  peel:     { lulu:4, janna:4, soraka:3, karma:3, thresh:3, braum:3 },
+};
+
+function calcCompBonus(champKey, enemies, allies = "") {
   const e = enemies.toLowerCase();
+  const a = allies.toLowerCase();
   let bonus = 0;
+
+  // 1. Bônus vs arquétipo inimigo
   for (const [tipo, regex] of Object.entries(COMP_REGEX)) {
     if (regex.test(e) && COMP_SCORE[tipo]?.[champKey]) {
       bonus += COMP_SCORE[tipo][champKey];
     }
   }
-  return Math.min(bonus, 6);
+
+  // 2. Complemento do time aliado (o que falta no time)
+  const allyHasTank    = /malphite|maokai|ornn|amumu|zac|chogath|sion|leona|nautilus|alistar/.test(a);
+  const allyHasEngage  = /malphite|amumu|zac|leona|nautilus|alistar|blitzcrank|thresh|rell/.test(a);
+  const allyHasAP      = /orianna|azir|syndra|veigar|ahri|lux|hwei|zoe|ryze|viktor|cassiopeia|malzahar|anivia/.test(a);
+  const allyHasAD      = /zed|talon|khazix|rengar|graves|draven|caitlyn|jinx|jhin|kaisa|xayah/.test(a);
+  const allyHasPeel    = /lulu|janna|soraka|nami|karma|thresh|braum|milio|yuumi/.test(a);
+
+  if (!allyHasTank    && ARCHETYPE_NEEDS.tank?.[champKey])     bonus += ARCHETYPE_NEEDS.tank[champKey];
+  if (!allyHasEngage  && ARCHETYPE_NEEDS.engage?.[champKey])   bonus += ARCHETYPE_NEEDS.engage[champKey];
+  if (!allyHasAP      && ARCHETYPE_NEEDS.ap?.[champKey])       bonus += ARCHETYPE_NEEDS.ap[champKey];
+  if (!allyHasAD      && ARCHETYPE_NEEDS.ad?.[champKey])       bonus += ARCHETYPE_NEEDS.ad[champKey];
+  if (!allyHasPeel    && ARCHETYPE_NEEDS.peel?.[champKey])     bonus += ARCHETYPE_NEEDS.peel[champKey];
+
+  // 3. Fase do jogo: se time inimigo é full late, early picks ganham bônus
+  const enemyIsLate = PHASE_POWER.late.filter(c=>e.includes(c)).length >= 2;
+  const enemyIsEarly = PHASE_POWER.early.filter(c=>e.includes(c)).length >= 2;
+  if (enemyIsLate    && PHASE_POWER.early.includes(champKey)) bonus += 3; // jogar early vs late
+  if (enemyIsEarly   && PHASE_POWER.late.includes(champKey))  bonus -= 2; // penaliza late vs early (não recomenda)
+  if (enemyIsEarly   && PHASE_POWER.scaling.includes(champKey)) bonus += 2; // scaling safe vs early
+
+  return Math.min(bonus, 12); // cap aumentado para refletir análise completa
 }
 
 function calcSynergyBonus(champKey, allies) {
@@ -197,7 +246,8 @@ function calcularMelhorPick({ role, allies, enemies, bans = "" }) {
     const { avg, worst, fromLocal } = calcMatchupScore(champKey, enemyKeys);
     const baseScore  = avg * 0.7 + worst * 0.3;
     const synergy    = calcSynergyBonus(champKey, allyKeys);
-    const compBonus  = calcCompBonus(champKey, enemies);
+    const compBonus  = calcCompBonus(champKey, enemies, allies);
+    // Score total: matchup (70% WR médio + 30% pior matchup) + sinergia + composição completa
     const score      = baseScore + synergy + compBonus;
 
     results.push({
@@ -459,6 +509,90 @@ ${(pick1Data?.build || []).map((it, i) => `  ${i+1}. ${it}`).join("\n")}
 //   deep (a cada 15s): IA textual (llama-3.3, sem limite free)
 // Debounce server-side para o modo deep
 
+// ── Ação contextual por estado real do jogo ─────────────────────────────────
+// Analisa: minuto + composição inimiga + pick selecionado → gera recomendação real
+function gerarAcaoContextual(min, champion, enemies, allies, bestPick) {
+  const e = (enemies||"").toLowerCase();
+  const a = (allies||"").toLowerCase();
+  const c = (champion||"").toLowerCase();
+  const hasChamp = c && c !== "";
+
+  // Ameaças identificadas no time inimigo
+  const temEngage  = /malphite|amumu|leona|nautilus|blitzcrank|alistar|rell|sejuani|zac/.test(e);
+  const temAssass  = /zed|talon|rengar|khazix|akali|diana|leblanc|nocturne|evelynn/.test(e);
+  const temCura    = /soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|sylas|swain|olaf/.test(e);
+  const temPoke    = /jayce|zoe|syndra|xerath|vel|nidalee|ezreal|lux|caitlyn/.test(e);
+  const temSplit   = /camille|fiora|jax|tryndamere|yorick|nasus|riven/.test(e);
+  const temCC      = /malzahar|leona|amumu|nautilus|blitzcrank|sion|sejuani|morgana|thresh/.test(e);
+
+  // Objetivos por tempo
+  if (min >= 0 && min <= 1) return { acao:"Farm seguro, sem risco", urgencia:"baixa",
+    detalhes:"Priorize CS perfeito. Não tente kills nível 1 sem vantagem clara." };
+
+  if (min >= 2 && min <= 3) return { acao:"Ward no rio e camp inimigo", urgencia:"baixa",
+    detalhes: temAssass ? "⚠️ Assassino inimigo — ward entrância da jungle e jogue com minions." : "Place sentinela no rio. Prepare para level 3 fight." };
+
+  if (min >= 4 && min <= 5) {
+    if (temEngage) return { acao:"Recue para torre se engajarem", urgencia:"media",
+      detalhes:"Time inimigo tem engage pesado. Não dê abertura longe da torre." };
+    if (temPoke) return { acao:"Jogue encostado nos minions", urgencia:"media",
+      detalhes:"Poke inimigo ativo. Use minions como escudo vs skillshots. Use cura com sabedoria." };
+    return { acao:"1° Dragão se possível (min 5)", urgencia:"media",
+      detalhes:"Prepare visão no pit do dragão. Comunique com o time antes de contestar." };
+  }
+
+  if (min >= 6 && min <= 7) {
+    if (temAssass && hasChamp) return { acao:"Guarde Flash para assassino", urgencia:"alta",
+      detalhes:`Assassino inimigo com ultimate disponível. Jogue encostado nos aliados.` };
+    return { acao:"Pressione e roame para objetivos", urgencia:"media",
+      detalhes:"Power spike de level 6. Confirme kill ou converta pressão em dragão/torre." };
+  }
+
+  if (min >= 8 && min <= 10) {
+    if (temCura) return { acao:"Compre anti-cura antes de lutar", urgencia:"alta",
+      detalhes:"Time inimigo tem cura pesada. Anti-heal obrigatório antes de teamfight." };
+    return { acao:"2° Dragão + controle de mapa", urgencia:"media",
+      detalhes:"Estabeleça visão no rio. O time com mais dragões vence o mid game." };
+  }
+
+  if (min >= 11 && min <= 13) {
+    if (temSplit) return { acao:"Não deixe split push inimigo solo", urgencia:"alta",
+      detalhes:`${e.includes("camille")||e.includes("fiora")||e.includes("tryndamere")?"Splitpusher":"Alguém"} inimigo ameaça lateral. Mande 1 para pressionar e agrupe 4.` };
+    return { acao:"Empurre torre e agrupe", urgencia:"media",
+      detalhes:"Mid game: converta pressão de lane em torre. Agrupe para objetivos." };
+  }
+
+  if (min >= 14 && min <= 16) {
+    return { acao:"Dragão da Alma — prioridade máxima", urgencia:"alta",
+      detalhes: temCC ? "⚠️ CC pesado inimigo — Ward pit antes. Flash disponível? Se não, não entre primeiro." : "Prepare visão 60s antes. Não permita contestação sem wards no pit." };
+  }
+
+  if (min >= 17 && min <= 19) {
+    if (temEngage) return { acao:"Não ande sozinho — engage inimigo ativo", urgencia:"alta",
+      detalhes:"Time inimigo tem initiation pesada. Mova em grupo de 3+. Fique com o time." };
+    return { acao:"Pressione para Baron às 20", urgencia:"media",
+      detalhes:"Garanta visão no pit do Baron. Um teamfight vantajoso aqui fecha o jogo." };
+  }
+
+  if (min >= 20 && min <= 24) {
+    const pickStr = bestPick ? ` Melhor pick atual: ${bestPick}.` : "";
+    return { acao:"Baron Nashor — ward e decisão", urgencia:"alta",
+      detalhes:`Baron 20min+. Nunca entre no pit sem visão nos arbustos laterais.${pickStr}` };
+  }
+
+  if (min >= 25 && min <= 29) {
+    return { acao:"Agrupe e force objetivos", urgencia:"alta",
+      detalhes: temSplit ? "Splitpusher inimigo — defender 3, empurrar 2 laterais. Não deixe baron grátis." : "Late game: não divida o time. 1 morte = perda de Baron/Base." };
+  }
+
+  if (min >= 30) {
+    return { acao:"One teamfight fecha o jogo", urgencia:"alta",
+      detalhes:"Nexus vulnerável a qualquer Baron. Jogue em grupo de 5. Um engage vantajoso termina a partida." };
+  }
+
+  return null; // usa cache padrão
+}
+
 const VISION_DEBOUNCE = 15_000;
 let lastVision = 0;
 let lastVisionCache = null;
@@ -508,6 +642,10 @@ app.post("/analyze", async (req, res) => {
         urgencia: "baixa",
         detalhes: `Min ${min}: jogue seguro, prepare o próximo objetivo`,
       };
+      // Gera ação contextual real baseada no estado atual do jogo
+      const ctxAcao = gerarAcaoContextual(min, champion, enemies, allies, bestPick?.champ);
+      if(ctxAcao) { base.acao = ctxAcao.acao; base.urgencia = ctxAcao.urgencia; base.detalhes = ctxAcao.detalhes; }
+
       return res.json({
         ...base,
         observacoes: obs,
