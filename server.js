@@ -1,119 +1,491 @@
-// ═══════════════════════════════════════════════════════════════════════════════
-// NEXUS ORACLE — SERVER v4.0
-// Arquitetura:
-//   1. Dataset local (dataset.js) — 164 campeões, builds verificadas
-//   2. Motor de pick server-side (sem IA, sem API externa)
-//   3. IA (llama-3.3-70b) apenas para explicação
-//   4. /analyze em dois modos: fast (rule-based) e deep (IA com texto)
-//   5. Zero dependência de lolalytics
-// ═══════════════════════════════════════════════════════════════════════════════
 
 import express from "express";
-import axios   from "axios";
-import cors    from "cors";
+import axios from "axios";
+import cors from "cors";
+import https from "https";
 import { D, findChamp, ALIASES, CHAMP_COUNT } from "./dataset.js";
 
 const app = express();
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "20mb" }));
 app.use(cors());
 
-const GROQ_KEY = process.env.GROQ_KEY;
+const GROQ_KEY = process.env.GROQ_KEY || "";
+const LIVE_AGENT = new https.Agent({ rejectUnauthorized: false });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// UTILITÁRIOS
-// ═══════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
+// Cache
+// ──────────────────────────────────────────────────────────────────────────────
+const CACHE = new Map();
+const TTL = {
+  patch: 6 * 60 * 60 * 1000,
+  ddragon: 6 * 60 * 60 * 1000,
+  live: 1500,
+};
+function cGet(k) {
+  const v = CACHE.get(k);
+  return v && Date.now() - v.ts < v.ttl ? v.value : null;
+}
+function cSet(k, value, ttl) {
+  CACHE.set(k, { value, ts: Date.now(), ttl });
+  return value;
+}
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Utils
+// ──────────────────────────────────────────────────────────────────────────────
+function normalizeName(name = "") {
+  const k = String(name).toLowerCase().trim().replace(/['\s\-_.]+/g, "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return ALIASES[String(name).toLowerCase().trim()] || ALIASES[k] || k;
+}
 function parseList(str) {
   if (!str || str === "não informado") return [];
-  return str.split(/[,;/|]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  return String(str).split(/[,;/|]+/).map(s => s.trim()).filter(Boolean);
 }
-
-function normalizeName(name) {
-  if (!name) return "";
-  const k = name.toLowerCase().trim()
-    .replace(/['\s-]+/g, "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  return ALIASES[name.toLowerCase().trim()] || ALIASES[k] || k;
+function uniq(arr) {
+  return [...new Set(arr)];
 }
-
+function titleCaseChampionKey(key) {
+  const data = D[key];
+  if (data?.name) return data.name;
+  const aliasSpecial = {
+    leesin: 'Lee Sin',
+    masteryi: 'Master Yi',
+    missfortune: 'Miss Fortune',
+    twistefate: 'Twisted Fate',
+    jarvaniv: 'Jarvan IV',
+    khazix: "Kha'Zix",
+    chogath: "Cho'Gath",
+    reksai: "Rek'Sai",
+    aurelionsol: 'Aurelion Sol',
+    tahm: 'Tahm Kench',
+    kaisa: "Kai'Sa",
+    kogmaw: "Kog'Maw",
+    vel: "Vel'Koz",
+    zaahen: 'Zaahen',
+    yunara: 'Yunara'
+  };
+  if (aliasSpecial[key]) return aliasSpecial[key];
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
 function getChamp(name) {
   const key = normalizeName(name);
   return D[key] || findChamp(name);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CLASSE → ANTI-CURA e ITENS SITUACIONAIS (100% server-side, nunca erra)
-// ═══════════════════════════════════════════════════════════════════════════════
-const ANTI_HEAL = {
-  adc:         "Lembrete Mortal (AD — NUNCA Morellonomicon)",
-  mago:        "Morellonomicon (AP — NUNCA Lembrete Mortal)",
-  assassino_ap:"Morellonomicon (AP — NUNCA Lembrete Mortal)",
-  assassino_ad:"Faca Chempunk Serrilhada (AD — NUNCA Morellonomicon)",
-  lutador:     "Faca Chempunk Serrilhada ou Armadura de Espinhos (AD — NUNCA Morellonomicon)",
-  tank:        "Armadura de Espinhos (tank — NUNCA Morellonomicon)",
-  enchanter:   "Executioner's Calling → Mortal Reminder (suporte)",
-  sup_engage:  "Vigilância Locket prioritário vs dive",
-};
+// ──────────────────────────────────────────────────────────────────────────────
+// Data Dragon current patch, items, runes, champions, spells
+// ──────────────────────────────────────────────────────────────────────────────
+async function getPatch() {
+  const c = cGet('patch');
+  if (c) return c;
+  try {
+    const r = await axios.get('https://ddragon.leagueoflegends.com/api/versions.json', { timeout: 5000 });
+    return cSet('patch', r.data[0], TTL.patch);
+  } catch {
+    return cGet('patch') || '15.6.1';
+  }
+}
+async function getDDragon(lang = 'en_US') {
+  const patch = await getPatch();
+  const key = `dd:${patch}:${lang}`;
+  const cached = cGet(key);
+  if (cached) return cached;
+  const [itemsR, runesR, champsR, spellsR] = await Promise.all([
+    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/${lang}/item.json`, { timeout: 8000 }),
+    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/${lang}/runesReforged.json`, { timeout: 8000 }),
+    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/${lang}/champion.json`, { timeout: 8000 }),
+    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/${lang}/summoner.json`, { timeout: 8000 }),
+  ]);
+  const itemMap = {};
+  const itemNameSet = new Set();
+  for (const [id, it] of Object.entries(itemsR.data.data || {})) {
+    itemMap[id] = it.name;
+    itemNameSet.add(it.name);
+  }
+  const championMap = {};
+  for (const [k, v] of Object.entries(champsR.data.data || {})) {
+    championMap[normalizeName(k)] = v.name;
+    championMap[normalizeName(v.name)] = v.name;
+  }
+  const spells = {};
+  for (const v of Object.values(spellsR.data.data || {})) spells[v.name] = true;
 
-function situacionais(champ, enemies, allies) {
-  const data = getChamp(champ);
-  const cls  = data?.cls || "desconhecido";
-  const e    = (enemies || "").toLowerCase();
-  const a    = (allies  || "").toLowerCase();
-  const items = [], notas = [];
+  const runeNameSet = new Set();
+  const runeTreeNameSet = new Set();
+  for (const tree of runesR.data || []) {
+    runeTreeNameSet.add(tree.name);
+    runeNameSet.add(tree.name);
+    for (const slot of tree.slots || []) {
+      for (const rune of slot.runes || []) runeNameSet.add(rune.name);
+    }
+  }
 
-  const temCura    = /soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|irelia|sylas|swain|vladimir|olaf|gwen|nasus|fiora/.test(e);
-  const temTanks   = (e.match(/malphite|maokai|ornn|chogath|sion|zac|sejuani|poppy|leona|nautilus|alistar|thresh|amumu|garen|drmundo|nasus/g)||[]).length >= 2;
-  const temEscudos = /lulu|janna|karma|renata|seraphine|shen|orianna/.test(e);
-  const temAssAD   = /zed|talon|rengar|khazix|nocturne|naafiri/.test(e);
-  const temAssAP   = /fizz|leblanc|akali|diana|evelynn|katarina/.test(e);
-  const temCCHard  = /malzahar|nautilus|blitzcrank|leona|amumu|morgana|alistar|thresh|sion|sejuani/.test(e);
-  const fullAP     = !/darius|garen|zed|talon|jinx|caitlyn|jhin|ezreal|draven|graves|irelia|jax|riven|fiora|aatrox|ambessa|olaf|renekton|wukong|xinzhao|vi|tryndamere|yasuo|yone|urgot|sett/.test(e);
-
-  if (temCura && ANTI_HEAL[cls]) items.push(`🩸 ANTI-CURA: ${ANTI_HEAL[cls]}`);
-  if (temTanks && ["adc","mago","assassino_ap","assassino_ad","lutador"].includes(cls))
-    items.push("🐙 Itens de penetração (Kraken/Bastão do Vazio) vs 2+ tanques");
-  if (temEscudos && !["tank","enchanter","sup_engage"].includes(cls))
-    items.push("🐍 Serpentine Fang / Rift-Maker vs escudos (Lulu/Janna/Karma)");
-  if (temAssAD && ["mago","assassino_ap"].includes(cls))
-    items.push("⏳ Ampulheta de Zhonya SLOT 3 obrigatória vs Zed/Talon/Rengar");
-  if (temAssAD && cls === "adc")
-    items.push("💀 Guardião Mortal vs assassino AD foca em você");
-  if (temCCHard && !["tank"].includes(cls))
-    items.push("🔵 Cimitarra Mercurial / Botas de Mercúrio vs CC pesado");
-  if (fullAP && ["lutador","adc"].includes(cls))
-    items.push("🍀 Força da Natureza + Botas de Mercúrio vs time full AP");
-
-  if (temTanks && !["tank","enchanter","sup_engage"].includes(cls))
-    notas.push("RUNA: Conquistador > Eletrocutar vs 2+ tanques (damage sustentado)");
-  if (temCCHard && cls !== "tank")
-    notas.push("RUNA SECUNDÁRIA: Lenda: Tenacidade vs CC pesado do time inimigo");
-  if (temAssAD && ["mago","assassino_ap"].includes(cls))
-    notas.push("RUNA: Manto de Nuvem na secundária vs assassino AD (10s invulnerabilidade)");
-
-  return { cls, items, notas };
+  return cSet(key, {
+    patch,
+    itemMap,
+    itemNameSet,
+    runeNameSet,
+    runeTreeNameSet,
+    championMap,
+    spells,
+  }, TTL.ddragon);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// MOTOR DE PICK — 100% local, zero API externa
-//
-// Score = WR médio vs inimigos × 0.7 + WR pior matchup × 0.3
-//         + bônus sinergia com aliados
-//         + bônus arquétipo de composição
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Pool por rota — campeões tier S/A atuais
-const POOL = {
-  // Zaahen: Top/Jungle (Skirmisher) | Yunara: ADC (Marksman)
-  top:     ["aatrox","camille","darius","fiora","garen","gnar","gwen","irelia","jax","jayce","kayle","kennen","ksante","mordekaiser","ornn","renekton","riven","rumble","sett","shen","sion","trundle","urgot","volibear","wukong","yorick","zaahen","ambessa"],
-  jungle:  ["amumu","belveth","briar","diana","elise","evelynn","fiddlesticks","gragas","graves","hecarim","ivern","jarvaniv","kayn","khazix","kindred","leesin","lillia","masteryi","nidalee","nocturne","nunu","rammus","reksai","rengar","sejuani","shaco","taliyah","udyr","vi","viego","volibear","warwick","wukong","xinzhao","zaahen","zac","karthus"],
-  mid:     ["ahri","akali","akshan","anivia","annie","aurelionsol","aurora","azir","cassiopeia","corki","ekko","fizz","galio","heimerdinger","hwei","kassadin","katarina","leblanc","lissandra","lux","malzahar","mel","naafiri","neeko","orianna","qiyana","ryze","syndra","sylas","talon","twistedfate","veigar","vel","vex","viktor","vladimir","xerath","yasuo","yone","zed","ziggs","zoe"],
-  adc:     ["aphelios","ashe","caitlyn","draven","ezreal","jhin","jinx","kaisa","kalista","kogmaw","lucian","misfortune","nilah","samira","sivir","smolder","tristana","twitch","varus","vayne","xayah","yunara","zeri"],
-  support: ["alistar","bard","blitzcrank","brand","braum","janna","karma","leona","lulu","milio","morgana","nami","nautilus","pyke","rakan","rell","renata","seraphine","sona","soraka","tahm","taric","thresh","yuumi","zilean","zyra","swain","senna"],
+// ──────────────────────────────────────────────────────────────────────────────
+// Canonical build / rune resolution (current valid English names only)
+// ──────────────────────────────────────────────────────────────────────────────
+const ITEM_ALIASES = {
+  // pt-br / legacy -> current / accepted English guesses
+  'fiodoinfinito': 'Infinity Edge',
+  'fio do infinito': 'Infinity Edge',
+  'infinityedge': 'Infinity Edge',
+  'rapidfirecannon': 'Rapid Firecannon',
+  'canhaorapidodefogo': 'Rapid Firecannon',
+  'rapidfire': 'Rapid Firecannon',
+  'krakenslayer': 'Kraken Slayer',
+  'matadoradekraken': 'Kraken Slayer',
+  'kraken': 'Kraken Slayer',
+  'mortalreminder': 'Mortal Reminder',
+  'lembretemortal': 'Mortal Reminder',
+  'lorddominik': "Lord Dominik's Regards",
+  'dominiks': "Lord Dominik's Regards",
+  'lorddominiksregards': "Lord Dominik's Regards",
+  'guardiaoanjo': 'Guardian Angel',
+  'guardianangel': 'Guardian Angel',
+  'coletor': 'The Collector',
+  'thecollector': 'The Collector',
+  'essencereaver': 'Essence Reaver',
+  'ceifadoressencia': 'Essence Reaver',
+  'yuntal': 'Yun Tal Wildarrows',
+  'flechatrozdeyuntal': 'Yun Tal Wildarrows',
+  'yuntalwildarrows': 'Yun Tal Wildarrows',
+  'botaasdeberserker': "Berserker's Greaves",
+  'botasdeberserker': "Berserker's Greaves",
+  'berserkersgreaves': "Berserker's Greaves",
+  'mercurialscimitar': 'Mercurial Scimitar',
+  'cimitarramercurial': 'Mercurial Scimitar',
+  'bloodthirster': 'Bloodthirster',
+  'sedenta por sangue': 'Bloodthirster',
+  'ie': 'Infinity Edge',
+  'ldr': "Lord Dominik's Regards",
+  'bork': 'Blade of the Ruined King',
+  'espadadoreidestruido': 'Blade of the Ruined King',
+  'bladeoftheruinedking': 'Blade of the Ruined King',
+  'nashorstooth': "Nashor's Tooth",
+  'dentedenashor': "Nashor's Tooth",
+  'voidstaff': 'Void Staff',
+  'bastaodovazio': 'Void Staff',
+  'rabadonsdeathcap': "Rabadon's Deathcap",
+  'chapeumortaldorabadon': "Rabadon's Deathcap",
+  'zhonyashourglass': "Zhonya's Hourglass",
+  'ampulhetadezhonya': "Zhonya's Hourglass",
+  'liandrystorment': "Liandry's Torment",
+  'tormentodeliandry': "Liandry's Torment",
+  'morellonomicon': 'Morellonomicon',
+  'ludenscompanion': "Luden's Companion",
+  'companheirodeluden': "Luden's Companion",
+  'stormsurge': 'Stormsurge',
+  'shadowflame': 'Shadowflame',
+  'chamadasombras': 'Shadowflame',
+  'riftmaker': 'Riftmaker',
+  'criadorfendas': 'Riftmaker',
+  'rylaiscrystalscepter': "Rylai's Crystal Scepter",
+  'cetrodecristalderylai': "Rylai's Crystal Scepter",
+  'blackcleaver': 'Black Cleaver',
+  'machadonegro': 'Black Cleaver',
+  'steraksgage': "Sterak's Gage",
+  'esteraksgage': "Sterak's Gage",
+  'deathsdance': "Death's Dance",
+  'dancadamorte': "Death's Dance",
+  'trinityforce': 'Trinity Force',
+  'forcadatrindade': 'Trinity Force',
+  'sunderedsky': 'Sundered Sky',
+  'profanedhydra': 'Profane Hydra',
+  'titanichydra': 'Titanic Hydra',
+  'ravenoushydra': 'Ravenous Hydra',
+  'ravenosahidra': 'Ravenous Hydra',
+  'eclipse': 'Eclipse',
+  'youmuusghostblade': "Youmuu's Ghostblade",
+  'lamadoserak?': "Sterak's Gage",
+  'seryldasgrudge': "Serylda's Grudge",
+  'rancordeserylda': "Serylda's Grudge",
+  'serpentsfang': "Serpent's Fang",
+  'facachempunkserrilhada': 'Chempunk Chainsword',
+  'chempunkchainsword': 'Chempunk Chainsword',
+  'thornmail': 'Thornmail',
+  'armaduradeespinhos': 'Thornmail',
+  'forceofnature': 'Force of Nature',
+  'forcadanatureza': 'Force of Nature',
+  'warmogsarmor': "Warmog's Armor",
+  'armaduradewarmog': "Warmog's Armor",
+  'frozenheart': 'Frozen Heart',
+  'coracaocongelado': 'Frozen Heart',
+  'spiritvisage': 'Spirit Visage',
+  'veudospirito': 'Spirit Visage',
+  'jakshotheprotean': "Jak'Sho, The Protean",
+  'jakshootheprotean': "Jak'Sho, The Protean",
+  'iceborngauntlet': 'Iceborn Gauntlet',
+  'manopladegelo': 'Iceborn Gauntlet',
+  'heartsteel': 'Heartsteel',
+  'acodocoracao': 'Heartsteel',
+  'sundered': 'Sundered Sky'
+};
+const RUNE_ALIASES = {
+  'conquistador': 'Conqueror',
+  'eletrocutar': 'Electrocute',
+  'ritmoletal': 'Lethal Tempo',
+  'primeirogolpe': 'First Strike',
+  'apertodosmortosvivos': 'Grasp of the Undying',
+  'faserush': 'Phase Rush',
+  'colheitasombria': 'Dark Harvest',
+  'pressioneoataque': 'Press the Attack',
+  'invocaraery': 'Summon Aery',
+  'triunfo': 'Triumph',
+  'lendaalacrity': 'Legend: Alacrity',
+  'lendapersistencia': 'Legend: Haste',
+  'lendatenacidade': 'Legend: Tenacity',
+  'golpedemisericordia': 'Coup de Grace',
+  'ultimaresistencia': 'Last Stand',
+  'presencadeespirito': 'Presence of Mind',
+  'demolir': 'Demolish',
+  'condicionamento': 'Conditioning',
+  'inabalavel': 'Unflinching',
+  'crescimentoexcessivo': 'Overgrowth',
+  'sangordosangue': 'Taste of Blood',
+  'sabordosangue': 'Taste of Blood',
+  'coletadeglobosoculares': 'Eyeball Collection',
+  'cacadorganancioso': 'Treasure Hunter',
+  'mantodenuvem': 'Nimbus Cloak',
+  'transcendencia': 'Transcendence',
+  'coletadetempestades': 'Gathering Storm',
+  'calcadosmagicos': 'Magical Footwear',
+  'perspicaciacosmica': 'Cosmic Insight',
+  'precisao': 'Precision',
+  'dominacao': 'Domination',
+  'feiticaria': 'Sorcery',
+  'determinacao': 'Resolve',
+  'inspiracao': 'Inspiration',
+  'adaptativo': 'Adaptive Force',
+  'armadura': 'Armor',
+  'resistenciamagica': 'Magic Resist',
+  'velocidadedeataque': 'Attack Speed',
+  'velocidadedehabilidade': 'Ability Haste'
 };
 
-const LANE_MAP = { top:"top", jungle:"jungle", mid:"mid", adc:"adc", bot:"adc", sup:"support", support:"support", suporte:"support" };
+const CLASS_BUILD_TEMPLATES = {
+  adc: {
+    runes: {
+      key: 'Fleet Footwork', primary: 'Precision', primaryRunes: ['Presence of Mind', 'Legend: Bloodline', 'Cut Down'],
+      secondary: 'Inspiration', secondaryRunes: ['Magical Footwear', 'Biscuit Delivery'], shards: ['Attack Speed', 'Adaptive Force', 'Health']
+    },
+    items: ['Berserker\'s Greaves', 'Infinity Edge', 'Rapid Firecannon', 'Lord Dominik\'s Regards', 'Bloodthirster', 'Guardian Angel'],
+    starter: 'Doran\'s Blade + Health Potion'
+  },
+  mago: {
+    runes: {
+      key: 'Electrocute', primary: 'Domination', primaryRunes: ['Taste of Blood', 'Eyeball Collection', 'Ultimate Hunter'],
+      secondary: 'Sorcery', secondaryRunes: ['Manaflow Band', 'Transcendence'], shards: ['Adaptive Force', 'Adaptive Force', 'Health']
+    },
+    items: ['Sorcerer\'s Shoes', 'Luden\'s Companion', 'Shadowflame', 'Zhonya\'s Hourglass', 'Rabadon\'s Deathcap', 'Void Staff'],
+    starter: 'Doran\'s Ring + Health Potion'
+  },
+  assassino_ap: {
+    runes: {
+      key: 'Electrocute', primary: 'Domination', primaryRunes: ['Sudden Impact', 'Eyeball Collection', 'Treasure Hunter'],
+      secondary: 'Sorcery', secondaryRunes: ['Nimbus Cloak', 'Transcendence'], shards: ['Adaptive Force', 'Adaptive Force', 'Health']
+    },
+    items: ['Sorcerer\'s Shoes', 'Lich Bane', 'Shadowflame', 'Zhonya\'s Hourglass', 'Rabadon\'s Deathcap', 'Void Staff'],
+    starter: 'Doran\'s Ring + Health Potion'
+  },
+  assassino_ad: {
+    runes: {
+      key: 'Electrocute', primary: 'Domination', primaryRunes: ['Sudden Impact', 'Eyeball Collection', 'Treasure Hunter'],
+      secondary: 'Precision', secondaryRunes: ['Triumph', 'Coup de Grace'], shards: ['Adaptive Force', 'Adaptive Force', 'Health']
+    },
+    items: ['Youmuu\'s Ghostblade', 'Opportunity', 'Serylda\'s Grudge', 'Edge of Night', 'Guardian Angel', 'Maw of Malmortius'],
+    starter: 'Long Sword + Refillable Potion'
+  },
+  lutador: {
+    runes: {
+      key: 'Conqueror', primary: 'Precision', primaryRunes: ['Triumph', 'Legend: Haste', 'Last Stand'],
+      secondary: 'Resolve', secondaryRunes: ['Second Wind', 'Overgrowth'], shards: ['Attack Speed', 'Adaptive Force', 'Health']
+    },
+    items: ['Plated Steelcaps', 'Black Cleaver', 'Sundered Sky', 'Sterak\'s Gage', 'Death\'s Dance', 'Guardian Angel'],
+    starter: 'Doran\'s Blade + Health Potion'
+  },
+  tank: {
+    runes: {
+      key: 'Grasp of the Undying', primary: 'Resolve', primaryRunes: ['Demolish', 'Second Wind', 'Overgrowth'],
+      secondary: 'Precision', secondaryRunes: ['Triumph', 'Legend: Haste'], shards: ['Attack Speed', 'Health', 'Health']
+    },
+    items: ['Mercury\'s Treads', 'Heartsteel', 'Iceborn Gauntlet', 'Thornmail', 'Force of Nature', 'Jak\'Sho, The Protean'],
+    starter: 'Doran\'s Shield + Health Potion'
+  },
+  enchanter: {
+    runes: {
+      key: 'Summon Aery', primary: 'Sorcery', primaryRunes: ['Manaflow Band', 'Transcendence', 'Scorch'],
+      secondary: 'Resolve', secondaryRunes: ['Bone Plating', 'Revitalize'], shards: ['Adaptive Force', 'Health', 'Health']
+    },
+    items: ['Ionian Boots of Lucidity', 'Moonstone Renewer', 'Ardent Censer', 'Staff of Flowing Water', 'Redemption', 'Mikael\'s Blessing'],
+    starter: 'World Atlas + 2 Health Potions'
+  },
+  sup_engage: {
+    runes: {
+      key: 'Aftershock', primary: 'Resolve', primaryRunes: ['Font of Life', 'Bone Plating', 'Unflinching'],
+      secondary: 'Inspiration', secondaryRunes: ['Hextech Flashtraption', 'Cosmic Insight'], shards: ['Attack Speed', 'Health', 'Health']
+    },
+    items: ['Mercury\'s Treads', 'Locket of the Iron Solari', 'Knight\'s Vow', 'Zeke\'s Convergence', 'Redemption', 'Trailblazer'],
+    starter: 'World Atlas + 2 Health Potions'
+  }
+};
 
-// Arquétipos de composição
+const CHAMP_OVERRIDES = {
+  jhin: {
+    runes: {
+      key: 'Fleet Footwork', primary: 'Precision', primaryRunes: ['Presence of Mind', 'Legend: Bloodline', 'Coup de Grace'],
+      secondary: 'Sorcery', secondaryRunes: ['Absolute Focus', 'Gathering Storm'], shards: ['Attack Speed', 'Adaptive Force', 'Health']
+    },
+    items: ['Berserker\'s Greaves', 'Infinity Edge', 'Rapid Firecannon', 'The Collector', 'Lord Dominik\'s Regards', 'Guardian Angel'],
+    starter: 'Doran\'s Blade + Health Potion'
+  },
+  aphelios: {
+    runes: {
+      key: 'Fleet Footwork', primary: 'Precision', primaryRunes: ['Overheal', 'Legend: Bloodline', 'Cut Down'],
+      secondary: 'Inspiration', secondaryRunes: ['Magical Footwear', 'Biscuit Delivery'], shards: ['Attack Speed', 'Adaptive Force', 'Health']
+    },
+    items: ['Berserker\'s Greaves', 'Infinity Edge', 'Runaan\'s Hurricane', 'Lord Dominik\'s Regards', 'Bloodthirster', 'Guardian Angel'],
+    starter: 'Doran\'s Blade + Health Potion'
+  },
+  yasuo: {
+    runes: {
+      key: 'Lethal Tempo', primary: 'Precision', primaryRunes: ['Triumph', 'Legend: Alacrity', 'Last Stand'],
+      secondary: 'Resolve', secondaryRunes: ['Second Wind', 'Overgrowth'], shards: ['Attack Speed', 'Adaptive Force', 'Health']
+    },
+    items: ['Berserker\'s Greaves', 'Blade of the Ruined King', 'Infinity Edge', 'Immortal Shieldbow', 'Mortal Reminder', 'Guardian Angel'],
+    starter: 'Doran\'s Blade + Health Potion'
+  },
+  zed: {
+    runes: {
+      key: 'Electrocute', primary: 'Domination', primaryRunes: ['Sudden Impact', 'Eyeball Collection', 'Treasure Hunter'],
+      secondary: 'Sorcery', secondaryRunes: ['Nimbus Cloak', 'Transcendence'], shards: ['Adaptive Force', 'Adaptive Force', 'Health']
+    },
+    items: ['Youmuu\'s Ghostblade', 'Opportunity', 'Serylda\'s Grudge', 'Edge of Night', 'Guardian Angel', 'Maw of Malmortius'],
+    starter: 'Long Sword + Refillable Potion'
+  },
+  ahri: {
+    runes: {
+      key: 'Electrocute', primary: 'Domination', primaryRunes: ['Taste of Blood', 'Eyeball Collection', 'Ultimate Hunter'],
+      secondary: 'Sorcery', secondaryRunes: ['Manaflow Band', 'Transcendence'], shards: ['Adaptive Force', 'Adaptive Force', 'Health']
+    },
+    items: ['Sorcerer\'s Shoes', 'Luden\'s Companion', 'Shadowflame', 'Zhonya\'s Hourglass', 'Rabadon\'s Deathcap', 'Void Staff'],
+    starter: 'Doran\'s Ring + Health Potion'
+  }
+};
+
+function closestValidName(name, validSet, aliases = {}) {
+  if (!name) return null;
+  const raw = String(name).trim();
+  const normalized = normalizeName(raw);
+  const fromAlias = aliases[normalized] || aliases[raw.toLowerCase().trim()];
+  if (fromAlias && validSet.has(fromAlias)) return fromAlias;
+  for (const v of validSet) {
+    if (normalizeName(v) === normalized) return v;
+  }
+  // loose substring pass
+  for (const v of validSet) {
+    const nv = normalizeName(v);
+    if (nv.includes(normalized) || normalized.includes(nv)) return v;
+  }
+  return null;
+}
+function canonicalizeItemArray(items, itemNameSet, champClass) {
+  const out = [];
+  for (const it of items || []) {
+    const c = closestValidName(it, itemNameSet, ITEM_ALIASES);
+    if (c && !out.includes(c)) out.push(c);
+  }
+  // patch gaps with class template if too short
+  const clsTemplate = CLASS_BUILD_TEMPLATES[champClass]?.items || [];
+  for (const it of clsTemplate) {
+    const c = closestValidName(it, itemNameSet, ITEM_ALIASES);
+    if (c && !out.includes(c)) out.push(c);
+    if (out.length >= 6) break;
+  }
+  return out.slice(0, 6);
+}
+function canonicalizeRunes(runes, runeNameSet, runeTreeNameSet, champClass) {
+  const tpl = runes || CLASS_BUILD_TEMPLATES[champClass]?.runes || {};
+  const key = closestValidName(tpl.key, runeNameSet, RUNE_ALIASES) || CLASS_BUILD_TEMPLATES[champClass]?.runes?.key || 'Conqueror';
+  const primary = closestValidName(tpl.p || tpl.primary, runeTreeNameSet, RUNE_ALIASES) || CLASS_BUILD_TEMPLATES[champClass]?.runes?.primary || 'Precision';
+  const secondary = closestValidName(tpl.s || tpl.secondary, runeTreeNameSet, RUNE_ALIASES) || CLASS_BUILD_TEMPLATES[champClass]?.runes?.secondary || 'Resolve';
+  const primaryRunes = uniq([tpl.r1, tpl.r2, tpl.r3, ...(tpl.primaryRunes || [])].filter(Boolean).map(v => closestValidName(v, runeNameSet, RUNE_ALIASES)).filter(Boolean)).slice(0,3);
+  const secondaryRunes = uniq([tpl.s1, tpl.s2, ...(tpl.secondaryRunes || [])].filter(Boolean).map(v => closestValidName(v, runeNameSet, RUNE_ALIASES)).filter(Boolean)).slice(0,2);
+  const shards = uniq([...(tpl.sh || tpl.shards || [])].map(v => closestValidName(v, runeNameSet, RUNE_ALIASES) || v).filter(Boolean)).slice(0,3);
+  return { key, primary, primaryRunes, secondary, secondaryRunes, shards };
+}
+
+async function resolveChampionSetup(champName, enemies = '', allies = '') {
+  const champ = getChamp(champName);
+  if (!champ) return null;
+  const dd = await getDDragon('en_US');
+  const key = normalizeName(champName);
+  const override = CHAMP_OVERRIDES[key] || {};
+  const base = CLASS_BUILD_TEMPLATES[champ.cls] || CLASS_BUILD_TEMPLATES.lutador;
+  let items = canonicalizeItemArray(override.items || champ.build || base.items, dd.itemNameSet, champ.cls);
+  let runes = canonicalizeRunes(override.runes || champ.runes || base.runes, dd.runeNameSet, dd.runeTreeNameSet, champ.cls);
+
+  const enemyStr = enemies.toLowerCase();
+  const situational = [];
+  if (/soraka|yuumi|nami|sona|lulu|aatrox|warwick|fiora|swain|vladimir/.test(enemyStr)) {
+    const antiMap = {
+      adc: 'Mortal Reminder', mago: 'Morellonomicon', assassino_ap: 'Morellonomicon', assassino_ad: 'Chempunk Chainsword', lutador: 'Chempunk Chainsword', tank: 'Thornmail', enchanter: 'Morellonomicon', sup_engage: 'Thornmail'
+    };
+    const anti = antiMap[champ.cls];
+    if (anti && dd.itemNameSet.has(anti) && !items.includes(anti)) situational.push(anti);
+  }
+  if ((enemyStr.match(/malphite|ornn|sion|zac|sejuani|rammus|poppy|nautilus|leona|alistar/g) || []).length >= 2) {
+    const pen = ['Lord Dominik\'s Regards', 'Void Staff'];
+    const pickPen = ['adc','lutador','assassino_ad'].includes(champ.cls) ? pen[0] : pen[1];
+    if (dd.itemNameSet.has(pickPen) && !items.includes(pickPen)) situational.push(pickPen);
+  }
+  if (/zed|talon|rengar|khazix|nocturne/.test(enemyStr)) {
+    const def = ['mago','assassino_ap'].includes(champ.cls) ? "Zhonya's Hourglass" : champ.cls === 'adc' ? 'Guardian Angel' : null;
+    if (def && dd.itemNameSet.has(def) && !items.includes(def)) situational.push(def);
+  }
+  if ((enemyStr.match(/syndra|veigar|lux|ahri|zoe|orianna|azir|cassiopeia|brand/g) || []).length >= 2) {
+    const mr = ['adc','lutador','tank'].includes(champ.cls) ? 'Force of Nature' : null;
+    if (mr && dd.itemNameSet.has(mr) && !items.includes(mr)) situational.push(mr);
+  }
+  for (const s of situational) {
+    if (!items.includes(s)) items[items.length < 6 ? items.length : 5] = s;
+  }
+  items = uniq(items).slice(0, 6);
+
+  return {
+    champion: titleCaseChampionKey(key),
+    championKey: key,
+    role: champ.role,
+    cls: champ.cls,
+    spells: champ.f || ['Flash', 'Teleport'],
+    starter: champ.ini || base.starter,
+    build: items,
+    runes,
+    tips: (champ.d || []).slice(0, 4),
+    patch: dd.patch,
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Pick engine based on local matchup/synergy dataset
+// ──────────────────────────────────────────────────────────────────────────────
+const LANE_MAP = { top:'top', jungle:'jungle', mid:'mid', adc:'adc', bot:'adc', sup:'support', support:'support', suporte:'support' };
+const POOL = {
+  top:     ['aatrox','camille','darius','fiora','garen','gnar','gwen','irelia','jax','jayce','kayle','kennen','ksante','mordekaiser','ornn','renekton','riven','rumble','sett','shen','sion','trundle','urgot','volibear','wukong','yorick','zaahen','ambessa'],
+  jungle:  ['amumu','belveth','briar','diana','elise','evelynn','fiddlesticks','gragas','graves','hecarim','ivern','jarvaniv','kayn','khazix','kindred','leesin','lillia','masteryi','nidalee','nocturne','nunu','rammus','reksai','rengar','sejuani','shaco','taliyah','udyr','vi','viego','volibear','warwick','wukong','xinzhao','zaahen','zac','karthus'],
+  mid:     ['ahri','akali','akshan','anivia','annie','aurelionsol','aurora','azir','cassiopeia','corki','ekko','fizz','galio','heimerdinger','hwei','kassadin','katarina','leblanc','lissandra','lux','malzahar','mel','naafiri','neeko','orianna','qiyana','ryze','syndra','sylas','talon','twistedfate','veigar','vel','vex','viktor','vladimir','xerath','yasuo','yone','zed','ziggs','zoe'],
+  adc:     ['aphelios','ashe','caitlyn','draven','ezreal','jhin','jinx','kaisa','kalista','kogmaw','lucian','misfortune','nilah','samira','sivir','smolder','tristana','twitch','varus','vayne','xayah','yunara','zeri'],
+  support: ['alistar','bard','blitzcrank','brand','braum','janna','karma','leona','lulu','milio','morgana','nami','nautilus','pyke','rakan','rell','renata','seraphine','sona','soraka','tahm','taric','thresh','yuumi','zilean','zyra','swain','senna'],
+};
 const COMP_REGEX = {
   engage_duro:  /malphite|amumu|jarvaniv|sejuani|leona|nautilus|blitzcrank|alistar|rell|wukong/,
   poke:         /jayce|zoe|syndra|xerath|vel|nidalee|ezreal|corki|karma|lux|caitlyn/,
@@ -126,77 +498,26 @@ const COMP_REGEX = {
   carry_ap:     /syndra|leblanc|veigar|ahri|zoe|orianna|azir|cassiopeia/,
   cc_pesado:    /malzahar|nautilus|blitzcrank|leona|amumu|morgana|alistar|thresh|sion|sejuani/,
 };
-
-// ── Bônus de composição vs arquétipo inimigo ──────────────────────────────────
 const COMP_SCORE = {
   engage_duro:  { malphite:5, kennen:4, rumble:4, lissandra:4, janna:5, morgana:4, yasuo:5, yone:4, vex:4, zac:3, fiddlesticks:3 },
   poke:         { vladimir:4, kassadin:4, mordekaiser:4, diana:3, fizz:3, vex:3, zed:3, akali:3 },
   assassino:    { malzahar:5, lissandra:4, galio:4, leona:3, nautilus:3, vex:4, lulu:4, soraka:3 },
   cura_pesada:  { veigar:3, karthus:3, zed:3, katarina:2, draven:2 },
   teamfight:    { orianna:5, azir:4, amumu:4, malphite:5, kennen:4, fiddlesticks:5, wukong:4, jarvaniv:3 },
-  split_push:   { shen:5, twistedfate:4, nocturne:4, gangplank:3, twisted:3 },
-  carry_ad:     { malphite:4, leona:3, nautilus:3, alistar:3 }, // tanques/engage counterm ADC
-  carry_ap:     { galio:4, kassadin:4, ksante:3, malphite:3 }, // MR picks vs AP heavy
-  cc_pesado:    { olaf:5, gangplank:4, kaisa:3, garen:3 }, // CC immune/cleanse vs CC chain
-  escudos:      { veigar:3, kaisa:3, zed:3, draven:3 }, // vs shield comps (burst first)
+  split_push:   { shen:5, twistedfate:4, nocturne:4, gangplank:3 },
+  carry_ad:     { malphite:4, leona:3, nautilus:3, alistar:3 },
+  carry_ap:     { galio:4, kassadin:4, ksante:3, malphite:3 },
+  cc_pesado:    { olaf:5, gangplank:4, kaisa:3, garen:3 },
+  escudos:      { veigar:3, kaisa:3, zed:3, draven:3 },
 };
-
-// ── Fase do jogo: early/late power ────────────────────────────────────────────
-// Bonus quando a composição inimiga é early ou late dominant
-const PHASE_POWER = {
-  // early dominant (comps com alto DPS/poke early → picks late safe são penalizados)
-  // late dominant (comps de scaling → picks early aggressive são valorizados)
-  early: ["draven","renekton","darius","jayce","camille","leesin","elise","graves","nidalee","caitlyn","lucian","pantheon","riven"],
-  late:  ["kayle","kassadin","Vladimir","nasus","veigar","jinx","kogmaw","twitch","smolder","azir","orianna","tryndamere","tristana"],
-  scaling:["cassiopeia","ryze","aurelionsol","viktor","veigar","lissandra","anivia","swain","mordekaiser"],
-};
-
-// Bonus de completude de composição com aliados
-const ARCHETYPE_NEEDS = {
-  // se time aliado não tem X, dar bônus para picks desse tipo
-  tank:     { malphite:4, amumu:4, maokai:3, ornn:4, zac:3, chogath:3, malzahar:3 },
-  engage:   { malphite:4, amumu:3, zac:3, leona:3, nautilus:3, alistar:3 },
-  ap:       { orianna:3, azir:3, syndra:3, veigar:3, ahri:3, lux:3, hwei:3 },
-  ad:       { zed:3, talon:3, khazix:3, rengar:3, graves:3, draven:3 },
-  enchanter:{ lulu:4, soraka:4, nami:3, janna:3, milio:3, yuumi:3 },
-  peel:     { lulu:4, janna:4, soraka:3, karma:3, thresh:3, braum:3 },
-};
-
-function calcCompBonus(champKey, enemies, allies = "") {
+function calcCompBonus(champKey, enemies, allies = '') {
   const e = enemies.toLowerCase();
-  const a = allies.toLowerCase();
   let bonus = 0;
-
-  // 1. Bônus vs arquétipo inimigo
   for (const [tipo, regex] of Object.entries(COMP_REGEX)) {
-    if (regex.test(e) && COMP_SCORE[tipo]?.[champKey]) {
-      bonus += COMP_SCORE[tipo][champKey];
-    }
+    if (regex.test(e) && COMP_SCORE[tipo]?.[champKey]) bonus += COMP_SCORE[tipo][champKey];
   }
-
-  // 2. Complemento do time aliado (o que falta no time)
-  const allyHasTank    = /malphite|maokai|ornn|amumu|zac|chogath|sion|leona|nautilus|alistar/.test(a);
-  const allyHasEngage  = /malphite|amumu|zac|leona|nautilus|alistar|blitzcrank|thresh|rell/.test(a);
-  const allyHasAP      = /orianna|azir|syndra|veigar|ahri|lux|hwei|zoe|ryze|viktor|cassiopeia|malzahar|anivia/.test(a);
-  const allyHasAD      = /zed|talon|khazix|rengar|graves|draven|caitlyn|jinx|jhin|kaisa|xayah/.test(a);
-  const allyHasPeel    = /lulu|janna|soraka|nami|karma|thresh|braum|milio|yuumi/.test(a);
-
-  if (!allyHasTank    && ARCHETYPE_NEEDS.tank?.[champKey])     bonus += ARCHETYPE_NEEDS.tank[champKey];
-  if (!allyHasEngage  && ARCHETYPE_NEEDS.engage?.[champKey])   bonus += ARCHETYPE_NEEDS.engage[champKey];
-  if (!allyHasAP      && ARCHETYPE_NEEDS.ap?.[champKey])       bonus += ARCHETYPE_NEEDS.ap[champKey];
-  if (!allyHasAD      && ARCHETYPE_NEEDS.ad?.[champKey])       bonus += ARCHETYPE_NEEDS.ad[champKey];
-  if (!allyHasPeel    && ARCHETYPE_NEEDS.peel?.[champKey])     bonus += ARCHETYPE_NEEDS.peel[champKey];
-
-  // 3. Fase do jogo: se time inimigo é full late, early picks ganham bônus
-  const enemyIsLate = PHASE_POWER.late.filter(c=>e.includes(c)).length >= 2;
-  const enemyIsEarly = PHASE_POWER.early.filter(c=>e.includes(c)).length >= 2;
-  if (enemyIsLate    && PHASE_POWER.early.includes(champKey)) bonus += 3; // jogar early vs late
-  if (enemyIsEarly   && PHASE_POWER.late.includes(champKey))  bonus -= 2; // penaliza late vs early (não recomenda)
-  if (enemyIsEarly   && PHASE_POWER.scaling.includes(champKey)) bonus += 2; // scaling safe vs early
-
-  return Math.min(bonus, 12); // cap aumentado para refletir análise completa
+  return Math.min(bonus, 8);
 }
-
 function calcSynergyBonus(champKey, allies) {
   const champData = D[champKey];
   if (!champData?.syn) return 0;
@@ -204,741 +525,284 @@ function calcSynergyBonus(champKey, allies) {
   for (const ally of allies) {
     const allyKey = normalizeName(ally);
     if (champData.syn[allyKey]) bonus += champData.syn[allyKey];
-    // Reverse: ally's syn também conta
     const allyData = D[allyKey];
     if (allyData?.syn?.[champKey]) bonus += allyData.syn[champKey];
   }
   return Math.min(bonus, 10);
 }
-
 function calcMatchupScore(champKey, enemyKeys) {
   const champData = D[champKey];
   if (!champData?.vs || enemyKeys.length === 0) return { avg: 50, worst: 50, fromLocal: false };
-
-  const wrs = enemyKeys.map(ek => {
-    // Tenta pelo nome exato, depois normalizado
-    return champData.vs[ek] ||
-           champData.vs[Object.keys(champData.vs).find(k => normalizeName(k) === ek)] ||
-           50; // neutro se não tem dados
-  });
-
-  const avg   = wrs.reduce((a, b) => a + b, 0) / wrs.length;
-  const worst = Math.min(...wrs);
-  const fromLocal = wrs.some(w => w !== 50);
-  return { avg, worst, fromLocal };
+  const wrs = enemyKeys.map(ek => champData.vs[ek] || champData.vs[Object.keys(champData.vs).find(k => normalizeName(k) === ek)] || 50);
+  return { avg: wrs.reduce((a,b)=>a+b,0)/wrs.length, worst: Math.min(...wrs), fromLocal: wrs.some(v=>v!==50) };
 }
-
-function calcularMelhorPick({ role, allies, enemies, bans = "" }) {
-  const lane     = LANE_MAP[role?.toLowerCase()] || "mid";
-  const pool     = POOL[lane] || POOL.mid;
-  const enemyKeys = parseList(enemies).map(normalizeName).filter(Boolean).slice(0, 5);
-  const allyKeys  = parseList(allies).map(normalizeName).filter(Boolean).slice(0, 4);
-  const banKeys   = parseList(bans).map(normalizeName).filter(Boolean);
-
+function calcularMelhorPick({ role, allies, enemies, bans = '' }) {
+  const lane = LANE_MAP[role?.toLowerCase()] || 'mid';
+  const pool = POOL[lane] || POOL.mid;
+  const enemyKeys = parseList(enemies).map(normalizeName).slice(0,5);
+  const allyKeys = parseList(allies).map(normalizeName).slice(0,4);
+  const banKeys = parseList(bans).map(normalizeName);
   const results = [];
-
   for (const champKey of pool) {
-    // Descarta bans
     if (banKeys.includes(champKey)) continue;
     const champData = D[champKey];
     if (!champData) continue;
-
     const { avg, worst, fromLocal } = calcMatchupScore(champKey, enemyKeys);
-    const baseScore  = avg * 0.7 + worst * 0.3;
-    const synergy    = calcSynergyBonus(champKey, allyKeys);
-    const compBonus  = calcCompBonus(champKey, enemies, allies);
-    // Score total: matchup (70% WR médio + 30% pior matchup) + sinergia + composição completa
-    const score      = baseScore + synergy + compBonus;
-
+    const baseScore = avg*0.7 + worst*0.3;
+    const synergy = calcSynergyBonus(champKey, allyKeys);
+    const compBonus = calcCompBonus(champKey, enemies, allies);
+    const score = Math.round((baseScore + synergy + compBonus)*10)/10;
     results.push({
-      champ:      champKey.charAt(0).toUpperCase() + champKey.slice(1),
-      champKey,
-      score:      Math.round(score    * 10) / 10,
-      avgWR:      Math.round(avg      * 10) / 10,
-      worstWR:    Math.round(worst    * 10) / 10,
-      synergy,
-      compBonus,
-      hasMatchupData: fromLocal,
-      role:   lane,
-      data:   champData,
+      champ: titleCaseChampionKey(champKey), champKey, score,
+      avgWR: Math.round(avg*10)/10, worstWR: Math.round(worst*10)/10,
+      synergy, compBonus, hasMatchupData: fromLocal, role: lane, data: champData
     });
   }
-
-  return results.sort((a, b) => b.score - a.score).slice(0, 5);
+  return results.sort((a,b)=>b.score-a.score).slice(0,5);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// FORMATA PICK para o prompt da IA
-// ═══════════════════════════════════════════════════════════════════════════════
-function formatPickForPrompt(pick) {
-  if (!pick) return "";
-  const d = pick.data;
-  const lines = [
-    `━━ PICK #1 CALCULADO PELO SISTEMA: ${pick.champ} ━━`,
-    `Score: ${pick.score} | WR médio vs inimigos: ${pick.avgWR}% | Pior matchup: ${pick.worstWR}%`,
-    pick.synergy   > 0 ? `Bônus sinergia: +${pick.synergy}` : "",
-    pick.compBonus > 0 ? `Bônus composição: +${pick.compBonus}` : "",
-    "",
-    `Rota: ${d.role} | Classe: ${d.cls}`,
-    `Feitiços: ${d.f?.join(" + ") || "Flash + Ignite"}`,
-    ``,
-    `RUNAS REAIS DO DATASET:`,
-    `  Keystone: ${d.runes?.key || "?"}`,
-    `  Primária: ${d.runes?.p || "?"} → ${[d.runes?.r1, d.runes?.r2, d.runes?.r3].filter(Boolean).join(" / ")}`,
-    `  Secundária: ${d.runes?.s || "?"} → ${[d.runes?.s1, d.runes?.s2].filter(Boolean).join(" / ")}`,
-    `  Shards: ${d.runes?.sh?.join(" | ") || "Adaptativo/Adaptativo/Armadura"}`,
-    ``,
-    `BUILD VERIFICADA (em ordem):`,
-    (d.build || []).map((it, i) => `  ${i+1}. ${it}`).join("\n"),
-    `Inicial: ${d.ini || "Doran Blade + Poção"}`,
-  ].filter(s => s !== undefined);
+// ──────────────────────────────────────────────────────────────────────────────
+// Live Client API (LCK Pro realtime)
+// ──────────────────────────────────────────────────────────────────────────────
+async function liveGet(path) {
+  const key = `live:${path}`;
+  const cached = cGet(key);
+  if (cached) return cached;
+  try {
+    const r = await axios.get(`https://127.0.0.1:2999${path}`, { httpsAgent: LIVE_AGENT, timeout: 800 });
+    return cSet(key, r.data, TTL.live);
+  } catch {
+    return null;
+  }
+}
+async function getLiveSnapshot() {
+  const [all, playerName, gameStats, events] = await Promise.all([
+    liveGet('/liveclientdata/allgamedata'),
+    liveGet('/liveclientdata/activeplayername'),
+    liveGet('/liveclientdata/gamestats'),
+    liveGet('/liveclientdata/eventdata'),
+  ]);
+  if (!all) return null;
+  const activeName = typeof playerName === 'string' ? playerName : (all.activePlayer?.riotIdGameName || all.activePlayer?.summonerName || '');
+  const activePlayer = (all.allPlayers || []).find(p => [p.riotId, p.riotIdGameName, p.summonerName].filter(Boolean).includes(activeName)) || null;
+  return { all, activePlayer, activeName, gameStats: gameStats || all.gameData || {}, events: events?.Events || all.events?.Events || [] };
+}
+function buildRealtimeAdvice(snapshot, fallbackContext = {}) {
+  const gameTime = Math.floor(snapshot?.gameStats?.gameTime || 0);
+  const min = Math.floor(gameTime / 60);
+  const active = snapshot?.activePlayer;
+  const allPlayers = snapshot?.all?.allPlayers || [];
+  const events = snapshot?.events || [];
+  const team = active?.team;
+  const allies = team ? allPlayers.filter(p => p.team === team) : [];
+  const enemies = team ? allPlayers.filter(p => p.team !== team) : [];
+  const me = active;
+  const myItems = (me?.items || []).map(i => i.displayName).filter(Boolean);
+  const myChampion = me?.championName || fallbackContext.champion || '';
+  const myGold = snapshot?.all?.activePlayer?.currentGold || 0;
+  const myHP = snapshot?.all?.activePlayer?.championStats?.currentHealth || 0;
+  const maxHP = snapshot?.all?.activePlayer?.championStats?.maxHealth || 1;
+  const hpPct = maxHP ? myHP / maxHP : 1;
+  const myScore = me?.scores || {};
+  const enemyFed = enemies.map(p => ({ name:p.championName, kills:p.scores?.kills||0, deaths:p.scores?.deaths||0, assists:p.scores?.assists||0, items:p.items||[] }))
+    .sort((a,b)=>(b.kills*2+b.assists)- (a.kills*2+a.assists))[0];
+  const recent = events.slice(-6).map(e=>e.EventName || '').join(',');
 
-  return lines.join("\n");
+  let acao = 'Play for next wave';
+  let urgencia = 'baixa';
+  let detalhes = `Minute ${min}: stable map state.`;
+  const observacoes = [];
+
+  if (hpPct < 0.28) {
+    acao = 'Reset now'; urgencia = 'alta'; detalhes = `Low HP (${Math.round(hpPct*100)}%). Do not contest blind.`;
+    observacoes.push('Spend gold and return with tempo.');
+  }
+  if (myGold >= 1500) observacoes.push(`You are sitting on ${Math.round(myGold)} gold.`);
+  if (/DragonKill/.test(recent) || (min >= 5 && min <= 6)) { acao = 'Secure dragon vision'; urgencia = urgencia === 'alta' ? 'alta' : 'media'; detalhes = `Minute ${min}: dragon side matters now.`; }
+  if (min >= 20) { acao = 'Control Baron area'; urgencia = urgencia === 'alta' ? 'alta' : 'media'; detalhes = `Minute ${min}: Baron is the main objective.`; }
+  if ((myScore.deaths || 0) >= 2 && (myScore.kills || 0) === 0 && min < 12) observacoes.push('Stop forcing. Play wave, reset vision, contest only with numbers.');
+  if (enemyFed && enemyFed.kills >= 4) observacoes.push(`${enemyFed.name} is the main threat (${enemyFed.kills}/${enemyFed.deaths}).`);
+  if (myItems.length) observacoes.push(`Current items: ${myItems.slice(0,3).join(', ')}.`);
+
+  return { acao, urgencia, detalhes, observacoes: observacoes.slice(0,4), champion: myChampion, minute: min, live: true };
 }
 
-function formatBuildForPrompt(champ, enemies, allies) {
-  const data = getChamp(champ);
-  if (!data) return `Campeão "${champ}" não encontrado no dataset.`;
-
-  const { cls, items: sitItems, notas: sitNotas } = situacionais(champ, enemies, allies);
-
+// ──────────────────────────────────────────────────────────────────────────────
+// Prompt formatting
+// ──────────────────────────────────────────────────────────────────────────────
+function formatResolvedSetup(setup) {
+  if (!setup) return '';
   return [
-    `━━ BUILD PARA ${champ.toUpperCase()} — dataset local ━━`,
-    `Classe: ${cls} | Rota: ${data.role}`,
-    `Feitiços: ${data.f?.join(" + ") || "Flash + Ignite"}`,
-    "",
-    `RUNAS:`,
-    `  Keystone: ${data.runes?.key}`,
-    `  Primária: ${data.runes?.p} → ${[data.runes?.r1, data.runes?.r2, data.runes?.r3].filter(Boolean).join(" / ")}`,
-    `  Secundária: ${data.runes?.s} → ${[data.runes?.s1, data.runes?.s2].filter(Boolean).join(" / ")}`,
-    `  Shards: ${data.runes?.sh?.join(" | ")}`,
-    "",
-    `BUILD (em ordem):`,
-    (data.build || []).map((it, i) => `  ${i+1}. ${it}`).join("\n"),
-    `Inicial: ${data.ini}`,
-    "",
-    sitItems.length ? `AJUSTES SITUACIONAIS:\n${sitItems.map(x => "  "+x).join("\n")}` : "",
-    sitNotas.length ? `RUNAS SITUACIONAIS:\n${sitNotas.map(x => "  "+x).join("\n")}` : "",
-    "",
-    `DICAS DO PERSONAGEM:\n${(data.d || []).map((x,i) => `  ${i+1}. ${x}`).join("\n")}`,
-  ].filter(Boolean).join("\n");
+    `Champion: ${setup.champion} | Role: ${setup.role} | Class: ${setup.cls}`,
+    `Spells: ${setup.spells.join(' + ')}`,
+    `Starter: ${setup.starter}`,
+    'Runes:',
+    `  Keystone: ${setup.runes.key}`,
+    `  Primary: ${setup.runes.primary} -> ${setup.runes.primaryRunes.join(' / ')}`,
+    `  Secondary: ${setup.runes.secondary} -> ${setup.runes.secondaryRunes.join(' / ')}`,
+    `  Shards: ${setup.runes.shards.join(' | ')}`,
+    'Build order:',
+    ...setup.build.map((it, i) => `  ${i+1}. ${it}`),
+    setup.tips?.length ? `Tips:\n${setup.tips.map((t,i)=>`  ${i+1}. ${t}`).join('\n')}` : ''
+  ].filter(Boolean).join('\n');
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CHAMADA GROQ (IA)
-// ═══════════════════════════════════════════════════════════════════════════════
-async function callGroq(systemMsg, userMsg, maxTokens = 900) {
-  const resp = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama-3.3-70b-versatile",
-      max_tokens: maxTokens,
-      temperature: 0.1,
-      messages: [
-        { role: "system",  content: systemMsg },
-        { role: "user",    content: userMsg   },
-      ],
-    },
-    {
-      headers: { Authorization: `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
-      timeout: 25000,
-    }
-  );
+async function callGroq(systemMsg, userMsg, maxTokens = 700) {
+  if (!GROQ_KEY) return 'Groq key not configured.';
+  const resp = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+    model: 'llama-3.3-70b-versatile', temperature: 0.1, max_tokens: maxTokens,
+    messages: [{ role:'system', content: systemMsg }, { role:'user', content: userMsg }]
+  }, { headers: { Authorization: `Bearer ${GROQ_KEY}`, 'Content-Type':'application/json' }, timeout: 25000 });
   return resp.data.choices[0].message.content;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CACHE (em memória)
-// ═══════════════════════════════════════════════════════════════════════════════
-const CACHE = new Map();
-function cGet(k)       { const e = CACHE.get(k); return e && Date.now()-e.ts < e.ttl ? e.v : null; }
-function cSet(k, v, t) { CACHE.set(k, { v, ts: Date.now(), ttl: t }); return v; }
-
-// Cache de patch do Data Dragon
-let cachedPatch = null;
-async function getPatch() {
-  if (cachedPatch) return cachedPatch;
-  try {
-    const r = await axios.get("https://ddragon.leagueoflegends.com/api/versions.json", { timeout: 5000 });
-    cachedPatch = r.data[0];
-  } catch { cachedPatch = "15.6.1"; }
-  return cachedPatch;
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DATA DRAGON PT-BR — nomes reais de itens e runas em português
-// ═══════════════════════════════════════════════════════════════════════════════
-let PTBR_ITEMS = null;  // id → name (PT-BR)
-let PTBR_RUNES = null;  // id → name (PT-BR)
-let PTBR_ITEMS_BY_NAME = null; // lowercase-name-en → name-ptbr
-
-async function getPTBRItems() {
-  if (PTBR_ITEMS) return PTBR_ITEMS;
-  try {
-    const patch = await getPatch();
-    const r = await axios.get(
-      `https://ddragon.leagueoflegends.com/cdn/${patch}/data/pt_BR/item.json`,
-      { timeout: 8000 }
-    );
-    PTBR_ITEMS = {};
-    PTBR_ITEMS_BY_NAME = {};
-    for (const [id, item] of Object.entries(r.data?.data || {})) {
-      PTBR_ITEMS[id] = item.name;
-      PTBR_ITEMS_BY_NAME[item.name.toLowerCase()] = item.name;
-    }
-    // Also fetch EN for cross-reference
-    const enR = await axios.get(
-      `https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/item.json`,
-      { timeout: 8000 }
-    );
-    for (const [id, item] of Object.entries(enR.data?.data || {})) {
-      PTBR_ITEMS_BY_NAME[item.name.toLowerCase()] = PTBR_ITEMS[id] || item.name;
-    }
-    console.log(`[DD] Itens PT-BR carregados: ${Object.keys(PTBR_ITEMS).length}`);
-  } catch (e) {
-    PTBR_ITEMS = {};
-    PTBR_ITEMS_BY_NAME = {};
-    console.log('[DD] Falha ao carregar itens PT-BR:', e.message?.slice(0,50));
-  }
-  return PTBR_ITEMS;
-}
-
-async function getPTBRRunes() {
-  if (PTBR_RUNES) return PTBR_RUNES;
-  try {
-    const patch = await getPatch();
-    const r = await axios.get(
-      `https://ddragon.leagueoflegends.com/cdn/${patch}/data/pt_BR/runesReforged.json`,
-      { timeout: 8000 }
-    );
-    PTBR_RUNES = {};
-    for (const tree of (r.data || [])) {
-      PTBR_RUNES[tree.key] = tree.name;
-      PTBR_RUNES[tree.name.toLowerCase()] = tree.name;
-      for (const row of (tree.slots || []))
-        for (const rune of (row.runes || [])) {
-          PTBR_RUNES[rune.key] = rune.name;
-          PTBR_RUNES[rune.id]  = rune.name;
-          PTBR_RUNES[rune.name.toLowerCase()] = rune.name;
-        }
-    }
-    console.log(`[DD] Runas PT-BR carregadas: ${Object.keys(PTBR_RUNES).length}`);
-  } catch (e) {
-    PTBR_RUNES = {};
-    console.log('[DD] Falha ao carregar runas PT-BR:', e.message?.slice(0,50));
-  }
-  return PTBR_RUNES;
-}
-
-// Valida e traduz nome de item para PT-BR real
-// Retorna: nome PT-BR oficial | nome original com tag (EN) | nome original
-function validateItemName(name) {
-  if (!name || typeof name !== 'string') return name;
-  if (!PTBR_ITEMS_BY_NAME) return name;
-  const lo = name.toLowerCase().trim();
-  // Match exato PT-BR
-  if (PTBR_ITEMS_BY_NAME[lo]) return PTBR_ITEMS_BY_NAME[lo];
-  // Match parcial (primeiras 5 letras)
-  const partial = Object.keys(PTBR_ITEMS_BY_NAME).find(k => k.startsWith(lo.slice(0,5)));
-  if (partial) return PTBR_ITEMS_BY_NAME[partial];
-  // Não encontrado — retorna original com flag
-  return name; // mantém como está (pode ser nome EN válido)
-}
-
-function validateRuneName(name) {
-  if (!name || typeof name !== 'string') return name;
-  if (!PTBR_RUNES) return name;
-  return PTBR_RUNES[name.toLowerCase()] || PTBR_RUNES[name] || name;
-}
-
-// Sanitiza build completa contra DD PT-BR
-async function sanitizeBuildDD(build) {
-  await getPTBRItems();
-  return (build || []).map(validateItemName);
-}
-
-async function sanitizeRunesDD(runes) {
-  await getPTBRRunes();
-  if (!runes) return runes;
-  return {
-    ...runes,
-    key: validateRuneName(runes.key),
-    p:   validateRuneName(runes.p),
-    r1:  validateRuneName(runes.r1),
-    r2:  validateRuneName(runes.r2),
-    r3:  validateRuneName(runes.r3),
-    s:   validateRuneName(runes.s),
-    s1:  validateRuneName(runes.s1),
-    s2:  validateRuneName(runes.s2),
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ROTAS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-app.get("/", async (req, res) => {
+// ──────────────────────────────────────────────────────────────────────────────
+// Routes
+// ──────────────────────────────────────────────────────────────────────────────
+app.get('/', async (_req, res) => {
   const patch = await getPatch();
-  res.json({
-    status: "Nexus Oracle v4 online",
-    patch,
-    dataset: `${CHAMP_COUNT} campeões (local)`,
-    dependencias_externas: "nenhuma — 100% local + IA para explicação",
-    modelo_ia: "llama-3.3-70b-versatile (ilimitado no Groq free)",
-  });
+  const live = await getLiveSnapshot();
+  res.json({ status: 'Nexus Oracle LCK Pro online', patch, dataset: `${CHAMP_COUNT} champions`, liveClient: !!live, language: 'English build/runes' });
 });
 
-// ── POST /oracle — Chat principal ─────────────────────────────────────────────
-app.post("/oracle", async (req, res) => {
+app.get('/meta', async (_req, res) => {
+  const dd = await getDDragon('en_US');
+  res.json({ patch: dd.patch, champions: Object.keys(D).map(k => ({ key:k, name:titleCaseChampionKey(k) })) });
+});
+
+app.post('/pick', async (req, res) => {
+  const { role='mid', allies='', enemies='', bans='' } = req.body || {};
+  if (!enemies) return res.status(400).json({ error: 'enemies is required' });
+  const picks = calcularMelhorPick({ role, allies, enemies, bans });
+  const enriched = [];
+  for (const p of picks.slice(0,3)) {
+    const setup = await resolveChampionSetup(p.champKey, enemies, allies);
+    enriched.push({ ...p, setup });
+  }
+  res.json({ picks: enriched });
+});
+
+app.post('/champ', async (req, res) => {
+  const { name='', enemies='', allies='' } = req.body || {};
+  const setup = await resolveChampionSetup(name, enemies, allies);
+  if (!setup) return res.status(404).json({ error: `Champion not found: ${name}` });
+  res.json({ setup });
+});
+
+app.post('/oracle', async (req, res) => {
   try {
     const { question, context = {} } = req.body;
-    if (!question) return res.status(400).json({ error: "question ausente" });
-
-    const {
-      champion = "", role = "",
-      allies   = "não informado",
-      enemies  = "não informado",
-      bans     = "não informado",
-    } = context;
-
+    if (!question) return res.status(400).json({ error:'question missing' });
+    const { champion='', role='', allies='', enemies='', bans='' } = context;
     const patch = await getPatch();
-    const champName = champion.trim();
-
-    // 1. Motor de pick (server-side)
-    const picks = calcularMelhorPick({ role, allies, enemies, bans });
-
-    // 2. Build para o campeão selecionado (se houver)
-    const champBuildBlock = champName
-      ? formatBuildForPrompt(champName, enemies, allies)
-      : "";
-
-    // 3. Bloco de picks calculados
-    const picksBlock = picks.length > 0 ? [
-      "",
-      "━━ MELHORES PICKS CALCULADOS (motor local, sem API) ━━",
-      picks.map((p, i) => {
-        const medal = ["🥇","🥈","🥉","4.","5."][i];
-        return [
-          `${medal} ${p.champ} — Score: ${p.score} | WR médio: ${p.avgWR}% | Pior: ${p.worstWR}%`,
-          p.synergy   > 0 ? `   +${p.synergy} sinergia com aliados` : "",
-          p.compBonus > 0 ? `   +${p.compBonus} vs composição inimiga` : "",
-        ].filter(Boolean).join("\n");
-      }).join("\n"),
-    ].join("\n") : "";
-
-    // 4. Sistema pick #1 completo para IA
-    const topPickBlock = picks[0] ? formatPickForPrompt(picks[0]) : "";
-
-    // 5. Composição do time inimigo
-    const compTypes = [];
-    for (const [tipo, regex] of Object.entries(COMP_REGEX)) {
-      if (regex.test(enemies.toLowerCase())) compTypes.push(tipo.replace(/_/g," "));
-    }
-    const compLine = compTypes.length
-      ? `Arquétipo inimigo: ${compTypes.join(", ")}`
-      : "Composição inimiga: geral";
-
-    const isBestPick = /melhor pick|qual pick|best pick|qual campe|o que jogar|o que pick|countera|counter|quem ganha|quem é bom/i.test(question);
-
+    const picks = enemies ? calcularMelhorPick({ role, allies, enemies, bans }).slice(0,3) : [];
+    const topSetup = picks[0] ? await resolveChampionSetup(picks[0].champKey, enemies, allies) : null;
+    const manualSetup = champion ? await resolveChampionSetup(champion, enemies, allies) : null;
+    const system = [
+      'You are Nexus Oracle, a League of Legends coach at LCK/LPL level.',
+      'Never invent items, runes, spells, or champions.',
+      'Use only the structured data provided by the system.',
+      'If a champion setup is provided, explain it; do not alter it.',
+      'If top 3 picks are provided, recommend the #1 pick and mention #2/#3 as alternatives.',
+      'Answer in Brazilian Portuguese, but keep item and rune names in English exactly as given.'
+    ].join(' ');
     const dataBlock = [
-      `Patch: ${patch} | Dataset: ${CHAMP_COUNT} campeões locais`,
-      `Time aliado: ${allies}`,
-      `Time inimigo: ${enemies}`,
-      `Bans: ${bans}`,
-      compLine,
-      champBuildBlock,
-      picksBlock,
-      isBestPick ? topPickBlock : "",
-    ].filter(Boolean).join("\n");
-
-    // 6. Formato do melhor pick
-    const pick1 = picks[0];
-    const pick1Data = pick1?.data;
-    const bestPickFmt = (isBestPick && pick1) ? `
-RESPONDA COM ESTE FORMATO EXATO:
-
-🏆 PICK DEFINIDO PELO SISTEMA: **${pick1.champ}** — ${pick1.role}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📊 SCORE: ${pick1.score} | WR médio vs inimigos: ${pick1.avgWR}% | Pior matchup: ${pick1.worstWR}%
-
-🔮 RUNAS DEFINIDAS (use EXATAMENTE estas):
-  Keystone: ${pick1Data?.runes?.key}
-  Primária: ${pick1Data?.runes?.p} → ${[pick1Data?.runes?.r1, pick1Data?.runes?.r2, pick1Data?.runes?.r3].filter(Boolean).join(" / ")}
-  Secundária: ${pick1Data?.runes?.s} → ${[pick1Data?.runes?.s1, pick1Data?.runes?.s2].filter(Boolean).join(" / ")}
-  Shards: ${pick1Data?.runes?.sh?.join(" | ")}
-
-⚔️ BUILD DEFINIDA (em ordem):
-${(pick1Data?.build || []).map((it, i) => `  ${i+1}. ${it}`).join("\n")}
-  Inicial: ${pick1Data?.ini}
-
-✅ POR QUE ESSE PICK VENCE ESSA COMPOSIÇÃO:
-[Explique 2-3 razões baseadas nos inimigos específicos acima]
-
-🔄 ALTERNATIVAS:
-  2°: ${picks[1]?.champ || "—"} (score ${picks[1]?.score || "—"})
-  3°: ${picks[2]?.champ || "—"} (score ${picks[2]?.score || "—"})
-
-❌ REGRA: NÃO altere o pick, runas ou build acima. Use EXATAMENTE os dados fornecidos.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` : "";
-
-    const systemMsg = [
-      "Você é o Nexus Oracle — coach de League of Legends nível LCK/LPL.",
-      "REGRAS ABSOLUTAS:",
-      "1. Use APENAS dados fornecidos no prompt — NUNCA invente itens ou runas.",
-      "2. O pick, runas e build já foram calculados e definidos — você NÃO pode alterá-los.",
-      "3. Sua função: explicar por que o sistema escolheu assim baseado na composição inimiga.",
-      `4. Classe do campeão: ${champName ? (getChamp(champName)?.cls || "desconhecida") : "N/A"}`,
-      "5. Se pergunta NÃO é de pick: explique a build/runas do campeão selecionado.",
-      "Responda em português brasileiro, direto e confiante como um coach profissional.",
-    ].join(" ");
-
-    const userMsg = `${dataBlock}\n\n${bestPickFmt}\n\nPergunta: ${question}\n\nPatch: ${patch}`;
-
-    const text = await callGroq(systemMsg, userMsg);
-
-    res.json({
-      text,
-      patch,
-      picks_calculados: picks.map(p => ({ champ: p.champ, score: p.score, avgWR: p.avgWR })),
-      fonte: "dataset local (100%)",
-    });
-
+      `Patch: ${patch}`,
+      `Role: ${role || 'unknown'}`,
+      `Allies: ${allies || 'unknown'}`,
+      `Enemies: ${enemies || 'unknown'}`,
+      `Bans: ${bans || 'unknown'}`,
+      manualSetup ? `MANUAL CHAMPION SETUP\n${formatResolvedSetup(manualSetup)}` : '',
+      picks.length ? 'TOP 3 PICKS\n' + (await Promise.all(picks.map(async (p,idx)=> `${idx+1}. ${p.champ} | Score ${p.score} | Avg WR ${p.avgWR}%\n${formatResolvedSetup(await resolveChampionSetup(p.champKey,enemies,allies)).split('\n').slice(0,10).join('\n')}`))).join('\n\n') : ''
+    ].filter(Boolean).join('\n\n');
+    const text = await callGroq(system, `${dataBlock}\n\nQuestion: ${question}`);
+    res.json({ text, patch, top3: picks.map(p=>({ champ:p.champ, score:p.score, avgWR:p.avgWR })) });
   } catch (e) {
-    const d = e.response?.data || e.message;
-    if (Math.random() < 0.2) console.error("[/oracle erro]", JSON.stringify(d).slice(0, 200));
-    res.status(500).json({ error: JSON.stringify(d) });
+    res.status(500).json({ error: e.message });
   }
 });
 
-// ── POST /analyze — Análise de tela em tempo real ─────────────────────────────
-// Dois modos:
-//   fast (default, a cada 2s): rule-based, 0ms, 0 tokens de IA
-//   deep (a cada 15s): IA textual (llama-3.3, sem limite free)
-// Debounce server-side para o modo deep
-
-// ── Dicas extras contextuais (complementam a ação principal) ─────────────────
-function gerarDicasExtras(min, enemies, allies) {
-  const e = (enemies||"").toLowerCase();
-  const dicas = [];
-
-  // Ameaças
-  if (/soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|sylas/.test(e)) dicas.push("⚕️ Time inimigo tem cura: compre anti-cura antes de lutar");
-  if (/malphite|amumu|leona|nautilus|blitzcrank|alistar|sejuani/.test(e)) dicas.push("⚠️ Engage pesado inimigo: não ande sozinho longe da torre");
-  if (/zed|talon|rengar|khazix|akali|diana|nocturne|evelynn/.test(e)) dicas.push("🔪 Assassino inimigo: guarde Flash e jogue encostado nos aliados");
-  if (/jayce|zoe|syndra|xerath|vel|nidalee|ezreal|lux|caitlyn/.test(e)) dicas.push("🎯 Poke inimigo: use minions como escudo, jogue no extremo do range");
-  if (/camille|fiora|jax|tryndamere|yorick|nasus/.test(e)) dicas.push("🗡️ Split push inimigo: não deixe 1v1 — envie alguém ou group 4-1");
-
-  // Objetivos por fase
-  if (min >= 14 && min <= 20 && dicas.length < 2) dicas.push("🐉 Prepare visão para objetivos: Alma/Baron em disputa");
-  if (min >= 5  && min <= 7  && dicas.length < 2) dicas.push("🏹 First blood ainda disponível: jogue agressivo com vantagem de farm");
-
-  return dicas.slice(0, 3);
-}
-
-// ── Ação contextual por estado real do jogo ─────────────────────────────────
-// Analisa: minuto + composição inimiga + pick selecionado → gera recomendação real
-function gerarAcaoContextual(min, champion, enemies, allies, bestPick) {
-  const e = (enemies||"").toLowerCase();
-  const a = (allies||"").toLowerCase();
-  const c = (champion||"").toLowerCase();
-  const hasChamp = c && c !== "";
-
-  // Ameaças identificadas no time inimigo
-  const temEngage  = /malphite|amumu|leona|nautilus|blitzcrank|alistar|rell|sejuani|zac/.test(e);
-  const temAssass  = /zed|talon|rengar|khazix|akali|diana|leblanc|nocturne|evelynn/.test(e);
-  const temCura    = /soraka|yuumi|nami|sona|lulu|mundo|aatrox|warwick|sylas|swain|olaf/.test(e);
-  const temPoke    = /jayce|zoe|syndra|xerath|vel|nidalee|ezreal|lux|caitlyn/.test(e);
-  const temSplit   = /camille|fiora|jax|tryndamere|yorick|nasus|riven/.test(e);
-  const temCC      = /malzahar|leona|amumu|nautilus|blitzcrank|sion|sejuani|morgana|thresh/.test(e);
-
-  // Objetivos por tempo
-  if (min >= 0 && min <= 1) return { acao:"Farm seguro, sem risco", urgencia:"baixa",
-    detalhes:"Priorize CS perfeito. Não tente kills nível 1 sem vantagem clara." };
-
-  if (min >= 2 && min <= 3) return { acao:"Ward no rio e camp inimigo", urgencia:"baixa",
-    detalhes: temAssass ? "⚠️ Assassino inimigo — ward entrância da jungle e jogue com minions." : "Place sentinela no rio. Prepare para level 3 fight." };
-
-  if (min >= 4 && min <= 5) {
-    if (temEngage) return { acao:"Recue para torre se engajarem", urgencia:"media",
-      detalhes:"Time inimigo tem engage pesado. Não dê abertura longe da torre." };
-    if (temPoke) return { acao:"Jogue encostado nos minions", urgencia:"media",
-      detalhes:"Poke inimigo ativo. Use minions como escudo vs skillshots. Use cura com sabedoria." };
-    return { acao:"1° Dragão se possível (min 5)", urgencia:"media",
-      detalhes:"Prepare visão no pit do dragão. Comunique com o time antes de contestar." };
-  }
-
-  if (min >= 6 && min <= 7) {
-    if (temAssass && hasChamp) return { acao:"Guarde Flash para assassino", urgencia:"alta",
-      detalhes:`Assassino inimigo com ultimate disponível. Jogue encostado nos aliados.` };
-    return { acao:"Pressione e roame para objetivos", urgencia:"media",
-      detalhes:"Power spike de level 6. Confirme kill ou converta pressão em dragão/torre." };
-  }
-
-  if (min >= 8 && min <= 10) {
-    if (temCura) return { acao:"Compre anti-cura antes de lutar", urgencia:"alta",
-      detalhes:"Time inimigo tem cura pesada. Anti-heal obrigatório antes de teamfight." };
-    return { acao:"2° Dragão + controle de mapa", urgencia:"media",
-      detalhes:"Estabeleça visão no rio. O time com mais dragões vence o mid game." };
-  }
-
-  if (min >= 11 && min <= 13) {
-    if (temSplit) return { acao:"Não deixe split push inimigo solo", urgencia:"alta",
-      detalhes:`${e.includes("camille")||e.includes("fiora")||e.includes("tryndamere")?"Splitpusher":"Alguém"} inimigo ameaça lateral. Mande 1 para pressionar e agrupe 4.` };
-    return { acao:"Empurre torre e agrupe", urgencia:"media",
-      detalhes:"Mid game: converta pressão de lane em torre. Agrupe para objetivos." };
-  }
-
-  if (min >= 14 && min <= 16) {
-    return { acao:"Dragão da Alma — prioridade máxima", urgencia:"alta",
-      detalhes: temCC ? "⚠️ CC pesado inimigo — Ward pit antes. Flash disponível? Se não, não entre primeiro." : "Prepare visão 60s antes. Não permita contestação sem wards no pit." };
-  }
-
-  if (min >= 17 && min <= 19) {
-    if (temEngage) return { acao:"Não ande sozinho — engage inimigo ativo", urgencia:"alta",
-      detalhes:"Time inimigo tem initiation pesada. Mova em grupo de 3+. Fique com o time." };
-    return { acao:"Pressione para Baron às 20", urgencia:"media",
-      detalhes:"Garanta visão no pit do Baron. Um teamfight vantajoso aqui fecha o jogo." };
-  }
-
-  if (min >= 20 && min <= 24) {
-    const pickStr = bestPick ? ` Melhor pick atual: ${bestPick}.` : "";
-    return { acao:"Baron Nashor — ward e decisão", urgencia:"alta",
-      detalhes:`Baron 20min+. Nunca entre no pit sem visão nos arbustos laterais.${pickStr}` };
-  }
-
-  if (min >= 25 && min <= 29) {
-    return { acao:"Agrupe e force objetivos", urgencia:"alta",
-      detalhes: temSplit ? "Splitpusher inimigo — defender 3, empurrar 2 laterais. Não deixe baron grátis." : "Late game: não divida o time. 1 morte = perda de Baron/Base." };
-  }
-
-  if (min >= 30) {
-    return { acao:"One teamfight fecha o jogo", urgencia:"alta",
-      detalhes:"Nexus vulnerável a qualquer Baron. Jogue em grupo de 5. Um engage vantajoso termina a partida." };
-  }
-
-  return null; // usa cache padrão
-}
-
-const VISION_DEBOUNCE = 15_000;
-let lastVision = 0;
-let lastVisionCache = null;
-
-app.post("/analyze", async (req, res) => {
+let lastDeep = 0;
+let lastDeepCache = null;
+const DEEP_MS = 7000;
+app.post('/analyze', async (req, res) => {
   try {
-    const { image, context = {}, gameTime, mode = "fast" } = req.body;
-    if (!image && mode !== "fast") return res.status(400).json({ error: "image ausente" });
-
-    const { allies = "", enemies = "", champion = "" } = context;
+    const { context = {}, gameTime = 0, mode = 'fast' } = req.body || {};
     const patch = await getPatch();
-    const min   = parseInt(gameTime) || 0;
+    const live = await getLiveSnapshot();
+    const minute = live ? Math.floor((live.gameStats?.gameTime || 0)/60) : parseInt(gameTime || 0, 10) || 0;
+    const enemies = context.enemies || '';
+    const allies = context.allies || '';
+    const role = context.role || 'mid';
+    const bans = context.bans || '';
+    const champion = live?.activePlayer?.championName || context.champion || '';
+    const picks = enemies ? calcularMelhorPick({ role, allies, enemies, bans }).slice(0,3) : [];
+    const top3 = [];
+    for (const p of picks) top3.push({ champ:p.champ, score:p.score, avgWR:p.avgWR, worstWR:p.worstWR });
 
-    // ── Dicas extras contextuais (complementam gerarAcaoContextual) ──
-    const tips = gerarDicasExtras(min, enemies, allies);
+    const setup = champion ? await resolveChampionSetup(champion, enemies, allies) : null;
+    const baseAdvice = live ? buildRealtimeAdvice(live, { champion }) : {
+      acao: minute < 10 ? 'Lane with discipline' : minute < 20 ? 'Play for next objective' : 'Group before objective',
+      urgencia: minute >= 20 ? 'media' : 'baixa',
+      detalhes: `Minute ${minute}: use waves and vision before fighting.`,
+      observacoes: ['No live client data. Using fallback context.'],
+      champion,
+      minute,
+      live: false,
+    };
 
-    // ── TOP 3 picks calculados (motor local, rule-based) ──
-    let topPicks = [];
-    let bestPick = null;
-    if (parseList(enemies).length >= 1) {
-      topPicks  = calcularMelhorPick({ role: context.role || "mid", allies, enemies });
-      bestPick  = topPicks[0] || null;
-    }
-    // Fallback se motor não achar nada
-    if (!topPicks.length) {
-      const fallbackPool = ["Ahri","Orianna","Syndra","Zed","LeeSin"];
-      topPicks = fallbackPool.map((c,i) => ({ champ:c, score:50, avgWR:50, worstWR:50, synergy:0, compBonus:0 }));
-      bestPick = topPicks[0];
-    }
-
-    // ── MODO FAST: rule-based instantâneo ──
     const now = Date.now();
-    const canDeep = (now - lastVision) >= VISION_DEBOUNCE;
-
-    if (mode === "fast" || !canDeep) {
-      const obs = [...tips.slice(0, 2)];
-      // SEMPRE gerar análise fresca — nunca usar cache antigo para ação principal
-      const ctxAcao = gerarAcaoContextual(min, champion, enemies, allies, bestPick?.champ);
-      const base = {
-        acao:     ctxAcao?.acao     || tips[0] || "Foque no CS e posicionamento",
-        urgencia: ctxAcao?.urgencia || "baixa",
-        detalhes: ctxAcao?.detalhes || `Min ${min}: jogue seguro e observe o minimapa.`,
-      };
-
+    const canDeep = (now - lastDeep) >= DEEP_MS;
+    if (mode === 'fast' || !canDeep || !GROQ_KEY) {
       return res.json({
-        ...base,
-        observacoes: obs,
-        picks: await Promise.all(topPicks.slice(0, 3).map(async p => ({
-          champ: p.champ, score: p.score, avgWR: p.avgWR, worstWR: p.worstWR,
-          synergy: p.synergy, compBonus: p.compBonus,
-          data: {
-            runes: await sanitizeRunesDD(p.data?.runes),
-            build: await sanitizeBuildDD(p.data?.build),
-            ini: p.data?.ini, f: p.data?.f, cls: p.data?.cls
-          },
-        }))),
-        best: bestPick?.champ || "",
-        fonte: "rule-based",
-        proximaAnalise: canDeep ? "disponível" : `${Math.round((VISION_DEBOUNCE-(now-lastVision))/1000)}s`,
+        ...baseAdvice,
+        top3,
+        build: setup?.build || [],
+        runes: setup?.runes || null,
+        starter: setup?.starter || '',
+        champion: setup?.champion || champion || '',
+        patch,
+        source: live ? 'liveclient-fast' : 'fallback-fast',
+        nextDeepIn: canDeep ? 0 : Math.max(0, Math.ceil((DEEP_MS - (now - lastDeep))/1000))
       });
     }
 
-    // ── MODO DEEP: IA textual (sem vision model, sem limite) ──
-    lastVision = now;
-
-    const pickLine = bestPick
-      ? `MELHOR PICK RECOMENDADO: ${bestPick.champ} (score ${bestPick.score}, WR médio ${bestPick.avgWR}%)`
-      : "";
-
-    const champBuild = champion ? formatBuildForPrompt(champion, enemies, allies) : "";
-
-    const contextStr = `
-Coach Challenger analisando partida ao vivo. Patch ${patch}.
-Campeão atual: ${champion || "desconhecido"}.
-Aliados: ${allies || "não informado"}.
-Inimigos: ${enemies || "não informado"}.
-Minuto: ${min}.
-${pickLine}
-
-${champBuild ? "BUILD ATUAL:\n" + champBuild.split("\n").slice(0,8).join("\n") : ""}
-
-Dicas baseadas no minuto:
-${tips.map(t => "• " + t).join("\n") || "• Jogue seguro"}
-
-Com base no contexto acima, retorne APENAS JSON válido:
-{
-  "acao": "ação prioritária agora (até 7 palavras)",
-  "urgencia": "alta ou media ou baixa",
-  "detalhes": "análise em 1 frase do que deve fazer agora",
-  "observacoes": ["dica 1", "dica 2", "dica 3"],
-  "pick": "${bestPick?.champ || ''}"
-}
-Urgência: alta = perigo imediato | media = objetivo disponível | baixa = estável`;
-
-    let parsed;
+    lastDeep = now;
+    const system = 'You are a League of Legends macro coach. Reply with valid JSON only. Do not invent items or runes. Keep item and rune names in English.';
+    const user = [
+      `Patch: ${patch}`,
+      `Champion: ${setup?.champion || champion || 'unknown'}`,
+      `Minute: ${baseAdvice.minute}`,
+      `Top 3 picks: ${top3.map((p,i)=>`${i+1}.${p.champ}(${p.avgWR}%)`).join(', ') || 'n/a'}`,
+      setup ? `Current recommended setup\n${formatResolvedSetup(setup)}` : '',
+      `Current advice baseline: ${baseAdvice.acao} | ${baseAdvice.urgencia} | ${baseAdvice.detalhes}`,
+      `Observations: ${(baseAdvice.observacoes||[]).join(' | ')}`,
+      'Return JSON: {"acao":"...","urgencia":"alta|media|baixa","detalhes":"...","observacoes":["...","..."],"callouts":["..."],"pick":"..."}'
+    ].filter(Boolean).join('\n\n');
+    let deep;
     try {
-      const raw = await callGroq(
-        "Coach de LoL nível Challenger. Responda apenas com JSON válido.",
-        contextStr,
-        300
-      );
+      const raw = await callGroq(system, user, 250);
       const m = raw.match(/\{[\s\S]*\}/);
-      parsed = JSON.parse(m ? m[0] : raw);
+      deep = JSON.parse(m ? m[0] : raw);
     } catch {
-      parsed = {
-        acao: tips[0] || "Foque no CS e posicionamento",
-        urgencia: tips.length > 0 ? "media" : "baixa",
-        detalhes: `Min ${min}: ${tips[0] || "jogue seguro e aguarde objetivo"}`,
-        observacoes: tips.slice(0, 3),
-        pick: bestPick?.champ || "",
-      };
+      deep = null;
     }
-
-    lastVisionCache = parsed;
-    res.json({
-      ...parsed,
-      fonte: "ia-textual",
-      best: parsed.pick || bestPick?.champ || "",
-      picks: topPicks.slice(0, 3).map(p => ({
-        champ: p.champ, score: p.score, avgWR: p.avgWR, worstWR: p.worstWR,
-        synergy: p.synergy, compBonus: p.compBonus,
-        data: { runes: p.data?.runes, build: p.data?.build, ini: p.data?.ini, f: p.data?.f, cls: p.data?.cls },
-      })),
-    });
-
-  } catch (e) {
-    const d = e.response?.data || e.message;
-    if (Math.random() < 0.1) console.error("[/analyze erro]", JSON.stringify(d).slice(0, 150));
-    res.status(500).json({ error: JSON.stringify(d) });
-  }
-});
-
-// ── POST /pick — Motor de pick puro (para uso direto do frontend) ─────────────
-app.post("/pick", async (req, res) => {
-  try {
-    const { role = "mid", allies = "", enemies = "", bans = "" } = req.body;
-    if (!enemies || enemies === "não informado") return res.status(400).json({ error: "enemies obrigatório" });
-
-    const picks = calcularMelhorPick({ role, allies, enemies, bans });
-    if (!picks.length) return res.json({ picks: [], mensagem: "Nenhum pick calculado" });
-
-    // Sanitiza builds e runas contra DD PT-BR antes de retornar
-    const picksValidated = await Promise.all(picks.map(async p => ({
-      champ:     p.champ,
-      score:     p.score,
-      avgWR:     p.avgWR,
-      worstWR:   p.worstWR,
-      synergy:   p.synergy,
-      compBonus: p.compBonus,
-      role:      p.role,
-      runes:     await sanitizeRunesDD(p.data?.runes),
-      build:     await sanitizeBuildDD(p.data?.build),
-      ini:       p.data?.ini,
-      feiticos:  p.data?.f,
-      dicas:     p.data?.d?.slice(0, 2),
-    })));
-    res.json({ picks: picksValidated });
+    const payload = {
+      ...(deep || baseAdvice),
+      top3,
+      build: setup?.build || [],
+      runes: setup?.runes || null,
+      starter: setup?.starter || '',
+      champion: setup?.champion || champion || '',
+      patch,
+      source: live ? 'liveclient-deep' : 'fallback-deep'
+    };
+    lastDeepCache = payload;
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// ── POST /champ — Dados completos de um campeão ───────────────────────────────
-app.post("/champ", (req, res) => {
-  const { name } = req.body;
-  const data = getChamp(name);
-  if (!data) return res.status(404).json({ error: `Campeão "${name}" não encontrado` });
-  res.json({ name, ...data });
-});
-
-// Start
-getPatch().then(async p => {
-  console.log(`Nexus Oracle v4 | patch ${p} | dataset: ${CHAMP_COUNT} campeões | IA: llama-3.3-70b`);
-  // Pre-aquece caches de Data Dragon PT-BR
-  Promise.all([getPTBRItems(), getPTBRRunes()]).catch(()=>{});
-}).catch(() => {});
-
-// ── GET /items-ptbr — nomes reais de itens PT-BR do Data Dragon ──────────────
-app.get("/items-ptbr", async (req, res) => {
-  try {
-    await getPTBRItems();
-    await getPTBRRunes();
-    const patch = await getPatch();
-    // Retorna lista de nomes válidos PT-BR para o frontend validar builds
-    const validItems = Object.values(PTBR_ITEMS_BY_NAME || {}).filter(Boolean);
-    const validRunes = Object.values(PTBR_RUNES || {}).filter(Boolean);
-    res.json({ patch, items: validItems, runes: validRunes, total: validItems.length });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── GET /item-stats — estatísticas de itens via Data Dragon ────────────────────
-// Data Dragon tem gold cost + stats para todos os itens
-app.get("/item-stats", async (req, res) => {
-  try {
-    const patch = await getPatch();
-    // Pega dados completos de itens PT-BR com stats (gold, tags, stats)
-    const r = await axios.get(
-      `https://ddragon.leagueoflegends.com/cdn/${patch}/data/pt_BR/item.json`,
-      { timeout: 8000 }
-    );
-    const items = {};
-    for (const [id, item] of Object.entries(r.data?.data || {})) {
-      if (!item.gold?.purchasable) continue; // descarta não-compráveis
-      items[item.name] = {
-        id,
-        name:   item.name,
-        gold:   item.gold?.total || 0,
-        tags:   item.tags || [],
-        stats:  item.stats || {},
-        depth:  item.depth || 1, // 1=básico 2=intermediário 3=completo
-      };
-    }
-    res.json({ patch, items, count: Object.keys(items).length });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.listen(3000, () => console.log("Servidor na porta 3000"));
+getPatch().then(p => console.log(`Nexus Oracle LCK Pro | patch ${p} | dataset ${CHAMP_COUNT}`)).catch(()=>{});
+app.listen(3000, () => console.log('Servidor na porta 3000'));
