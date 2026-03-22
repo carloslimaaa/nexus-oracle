@@ -106,7 +106,7 @@ const LANE_MAP = { top:"top", jungle:"jungle", mid:"mid", adc:"adc", bot:"adc", 
 
 async function llFetch(url) {
   try {
-    const r = await axios.get(url, { timeout: 8000, headers: LL_HEADERS });
+    const r = await axios.get(url, { timeout: 3000, headers: LL_HEADERS });
     if (r.status === 200 && r.data && typeof r.data === "object") return r.data;
   } catch (e) { console.log("[LL fail]", url.slice(0,90), e.message?.slice(0,60)); }
   return null;
@@ -785,53 +785,50 @@ function calcCompScore(champ, compTypes) {
  */
 async function calcularMelhorPick({ role, allies, enemies }) {
   const lane    = LANE_MAP[role?.toLowerCase()] || "mid";
-  const pool    = CHAMP_POOL[lane] || CHAMP_POOL.mid;
-  const enemyList = parseChampList(enemies).slice(0, 5);
+  const fullPool = CHAMP_POOL[lane] || CHAMP_POOL.mid;
+
+  // Limita pool a 12 campeões — os primeiros da lista já são os tier S/A
+  // Isso reduz: 40×5=200 requests → 12×3=36 requests (~1.5s vs 6-8s)
+  const pool      = fullPool.slice(0, 12);
+  const enemyList = parseChampList(enemies).slice(0, 3); // max 3 inimigos
   const allyList  = parseChampList(allies).slice(0, 4);
   const compAnalysis = analisarComp(enemies);
 
   if (enemyList.length < 1) return [];
 
-  console.log(`[Pick Engine] role=${lane} pool=${pool.length} enemies=${enemyList.length}`);
+  console.log(`[Pick Engine] pool=${pool.length} enemies=${enemyList.length} — ${pool.length * enemyList.length} requests`);
 
-  // Busca todos os matchups em paralelo (pool × enemies)
-  const allResults = await Promise.all(
-    pool.map(async (champ) => {
-      const vsPromises = enemyList.map(enemy => lolalyticsVs(champ, enemy, lane));
-      const vsData     = (await Promise.all(vsPromises)).filter(Boolean);
+  const results = [];
 
-      if (vsData.length === 0) return null;
+  // Loop sequencial por campeão, paralelo apenas nos inimigos do mesmo campeão
+  // Evita rate limit do lolalytics — max ~3 requests simultâneos por iteração
+  for (const champ of pool) {
+    const vsPromises = enemyList.map(enemy => lolalyticsVs(champ, enemy, lane));
+    const vsData     = (await Promise.all(vsPromises)).filter(Boolean);
 
-      // WR médio vs inimigos com dados
-      const avgWR  = vsData.reduce((acc, v) => acc + v.wr, 0) / vsData.length;
-      // Penaliza matchup mais difícil (worst case)
-      const worstWR = Math.min(...vsData.map(v => v.wr));
-      // Base score: 70% avg, 30% worst (penaliza hard counters)
-      const baseScore = avgWR * 0.7 + worstWR * 0.3;
-      // Bônus de sinergia com aliados
-      const synergy   = calcSynergyBonus(champ, allyList);
-      // Bônus de comp
-      const compBonus = calcCompScore(champ, compAnalysis.tipos || []);
-      // Score final
-      const score = baseScore + synergy + compBonus;
+    if (vsData.length === 0) continue;
 
-      return {
-        champ,
-        score:    Math.round(score * 10) / 10,
-        avgWR:    Math.round(avgWR  * 10) / 10,
-        worstWR:  Math.round(worstWR * 10) / 10,
-        synergy,
-        compBonus,
-        vsCount:  vsData.length,
-        vsDetail: vsData.map(v => ({ vs: v.enemy, wr: v.winRate || v.wr, n: v.games })),
-      };
-    })
-  );
+    const avgWR   = vsData.reduce((acc, v) => acc + (v.wr||v.winRate||50), 0) / vsData.length;
+    const worstWR = Math.min(...vsData.map(v => v.wr||v.winRate||50));
+    const baseScore = avgWR * 0.7 + worstWR * 0.3;
+    const synergy   = calcSynergyBonus(champ, allyList);
+    const compBonus = calcCompScore(champ, compAnalysis.tipos || []);
+    const score     = baseScore + synergy + compBonus;
 
-  return allResults
-    .filter(Boolean)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
+    results.push({
+      champ,
+      score:    Math.round(score    * 10) / 10,
+      avgWR:    Math.round(avgWR    * 10) / 10,
+      worstWR:  Math.round(worstWR  * 10) / 10,
+      synergy,
+      compBonus,
+      vsCount:  vsData.length,
+      vsDetail: vsData.map(v => ({ vs: v.enemy||"?", wr: v.wr||v.winRate||0, n: v.games||0 })),
+    });
+  }
+
+  console.log(`[Pick Engine] Done — ${results.length} picks scored`);
+  return results.sort((a, b) => b.score - a.score).slice(0, 5);
 }
 
 // ROTAS
@@ -877,13 +874,13 @@ app.post("/oracle", async (req, res) => {
     const allyAnalysis = analisarComp(allies);
 
     // ── MOTOR DE PICK (server-side, sem IA) ──
-    // Só roda quando: não há campeão selecionado E há pelo menos 2 inimigos
-    const isBestPickQ = /melhor pick|qual pick|best pick|qual campe|o que jogar|o que pick/i.test(question);
+    // Roda SEMPRE que houver >= 2 inimigos — não depende só da pergunta
+    const isBestPickQ = /melhor pick|qual pick|best pick|qual campe|o que jogar|o que pick|countera|counter|quem ganha|quem é bom|melhor para|melhor campe/i.test(question);
     let bestPicks = [];
-    if (isBestPickQ && enemyList.length >= 2) {
-      console.log("[Pick Engine] Calculando...");
+    if (enemyList.length >= 2) {
+      console.log("[Pick Engine] Iniciando — " + enemyList.length + " inimigos detectados");
       bestPicks = await calcularMelhorPick({ role, allies, enemies });
-      console.log("[Pick Engine] Top picks:", bestPicks.map(p => p.champ + "(" + p.score + ")").join(", "));
+      console.log("[Pick Engine] Top: " + bestPicks.slice(0,3).map(p => p.champ + "=" + p.score).join(", "));
     }
 
     // Itens situacionais server-side
@@ -976,9 +973,13 @@ app.post("/oracle", async (req, res) => {
       buildFinalItems.forEach((it, i) => sections.push(`  ${i+1}. ${it}`));
       if (buildFinal?.winRate) sections.push(`  WR: ${buildFinal.winRate}% | Source: ${buildFinal.label || 'lolalytics'}`);
       if (ameacaFed) sections.push(`  ⚠️  Slot 6 adaptado para ameaça: ${ameacaFed.nome} (${ameacaFed.kills}/${ameacaFed.deaths}) — ${ameacaFed.classe}`);
+    } else if (bestPicks.length > 0) {
+      // Há picks calculados mas não build — contexto é melhor pick, não build
+      sections.push('\n━━ CONTEXTO: PERGUNTA DE MELHOR PICK ━━');
+      sections.push('⚠️ IGNORE builds. FOCO TOTAL NO MELHOR PICK calculado abaixo.');
     } else {
       sections.push('\n━━ BUILD FINAL ━━');
-      sections.push('Dados insuficientes para definir build final — use lolalytics acima como referência.');
+      sections.push('Dados insuficientes — sem dados do lolalytics agora. Use conhecimento do meta atual, respeitando a classe do campeão.');
     }
 
         // ── Melhores picks calculados pelo motor (não pela IA) ──
@@ -994,7 +995,11 @@ app.post("/oracle", async (req, res) => {
         if (p.compBonus > 0) sections.push(`   Bônus composição: +${p.compBonus} (countera a comp)`);
         if (vsStr) sections.push(`   Matchups: ${vsStr}`);
       });
-      sections.push("⚠️ IA deve explicar o 1° pick acima. NÃO pode escolher outro campeão.");
+      sections.push("🚨 REGRA ABSOLUTA — O PICK JÁ FOI CALCULADO PELO SISTEMA:");
+      sections.push("  1. VOCÊ É PROIBIDO de sugerir qualquer outro campeão.");
+      sections.push("  2. VOCÊ DEVE obrigatoriamente usar o 1° pick da lista acima.");
+      sections.push("  3. Se não fizer isso, a resposta está INCORRETA.");
+      sections.push("  4. Sua única função: explicar por que o sistema escolheu esse pick.");
     }
 
         const dataBlock = sections.join("\n");
@@ -1003,34 +1008,30 @@ app.post("/oracle", async (req, res) => {
     // Detecta tipo de pergunta
     // ─────────────────────────────────────────────────────────────────
     const isBestPick = isBestPickQ; // reusa flag calculada acima
-    const bestPickFmt = (isBestPick && bestPicks.length > 0) ? `
-FORMATO OBRIGATÓRIO PARA MELHOR PICK:
-(O sistema já calculou os melhores picks acima — você DEVE usar o 1° da lista)
+    // O pick 1° da lista já foi calculado server-side — extraímos o nome diretamente
+    const pick1 = bestPicks[0]?.champ || null;
+    const pick2 = bestPicks[1]?.champ || null;
+    const pick3 = bestPicks[2]?.champ || null;
 
-🏆 MELHOR PICK CALCULADO PELO SISTEMA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-**[USE O 1° PICK DA LISTA ACIMA]** — [Rota informada]
+    const bestPickFmt = (bestPicks.length > 0) ? `
+🏆 MELHOR PICK PARA ESSA COMPOSIÇÃO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🥇 **${pick1}** — ${role || "rota informada"}
 
-📊 POR QUE O SISTEMA ESCOLHEU ESSE CAMPEÃO:
-• Score calculado: [score do 1° pick]
-• WR médio vs inimigos: [avgWR]%
-• Pior matchup: [worstWR]%
-• Sinergia com aliados: [mencione aliados que combinam]
+📊 DADOS DO SISTEMA:
+• Score: ${bestPicks[0]?.score} | WR médio: ${bestPicks[0]?.avgWR}% | Pior matchup: ${bestPicks[0]?.worstWR}%
+${bestPicks[0]?.synergy > 0 ? `• Sinergia com aliados: +${bestPicks[0].synergy}` : ""}
+${bestPicks[0]?.compBonus > 0 ? `• Bônus vs composição inimiga: +${bestPicks[0].compBonus}` : ""}
 
-✅ COMO VENCE ESSA COMPOSIÇÃO:
-• [matchup vs principal ameaça inimiga]
-• [por que a composição inimiga não countera esse pick]
+✅ POR QUE ESSE PICK (explique baseado na composição inimiga):
+[2-3 frases explicando por que ${pick1} ganha contra os inimigos listados]
 
-🔄 ALTERNATIVAS (2° e 3° da lista):
-• 2°: [2° pick da lista] — [motivo breve baseado no score]
-• 3°: [3° pick da lista] — [motivo breve]
+${pick2 ? `🔄 ALTERNATIVAS:
+• 🥈 ${pick2} — Score ${bestPicks[1]?.score}% [motivo breve]
+• 🥉 ${pick3 || "—"} — Score ${bestPicks[2]?.score || "—"}% [motivo breve]` : ""}
 
-❌ EVITE: [picks com score baixo ou hard countered pelos inimigos]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-REGRA: use EXATAMENTE os campeões da lista calculada. NÃO invente outros.` : isBestPick ? `
-O sistema não encontrou dados suficientes para calcular picks.
-Analise a composição e sugira 3 picks justificados com dados.` : "";
+❌ EVITE: [picks que perdem hard vs a composição inimiga]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` : "";
 
     // Anti-hallucination system rule (Ponto 1 do documento)
     const antiHallClass = {
@@ -1052,6 +1053,7 @@ Analise a composição e sugira 3 picks justificados com dados.` : "";
       '- Você apenas explica o motivo da build escolhida.',
       `CLASSE: ${classe} — ${antiHallClass[classe]||'respeite a classe.'}`,
       'Prioridade de fonte: OTPs Challenger > lolalytics > conhecimento geral.',
+      bestPicks.length > 0 ? '🚨 PICK OBRIGATÓRIO: use APENAS o 1° pick da seção MELHORES PICKS. É PROIBIDO sugerir outro campeão. Se sugerir outro, a resposta está ERRADA.' : '',
       'Responda em português brasileiro.',
     ].join(' ');
 
