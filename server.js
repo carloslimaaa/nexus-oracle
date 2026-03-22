@@ -483,11 +483,18 @@ app.post("/analyze", async (req, res) => {
     if (min>=25)            tips.push("Late game: não ande sozinho, agrupe para objetivos");
     if (min>=30)            tips.push("Dragão Ancião disponível — lute pelo objetivo ou ceda e recue");
 
-    // ── Pick calculado (motor local) ──
+    // ── TOP 3 picks calculados (motor local, rule-based) ──
+    let topPicks = [];
     let bestPick = null;
     if (parseList(enemies).length >= 1) {
-      const picks = calcularMelhorPick({ role: context.role || "mid", allies, enemies });
-      bestPick = picks[0] || null;
+      topPicks  = calcularMelhorPick({ role: context.role || "mid", allies, enemies });
+      bestPick  = topPicks[0] || null;
+    }
+    // Fallback se motor não achar nada
+    if (!topPicks.length) {
+      const fallbackPool = ["Ahri","Orianna","Syndra","Zed","LeeSin"];
+      topPicks = fallbackPool.map((c,i) => ({ champ:c, score:50, avgWR:50, worstWR:50, synergy:0, compBonus:0 }));
+      bestPick = topPicks[0];
     }
 
     // ── MODO FAST: rule-based instantâneo ──
@@ -496,7 +503,6 @@ app.post("/analyze", async (req, res) => {
 
     if (mode === "fast" || !canDeep) {
       const obs = [...tips.slice(0, 3)];
-      if (bestPick) obs.unshift(`Melhor pick: ${bestPick.champ} (WR médio ${bestPick.avgWR}%)`);
       const base = lastVisionCache || {
         acao: tips[0] || "Foque no CS e posicionamento",
         urgencia: "baixa",
@@ -504,8 +510,13 @@ app.post("/analyze", async (req, res) => {
       };
       return res.json({
         ...base,
-        observacoes: obs.slice(0, 4),
-        pick: bestPick?.champ || "",
+        observacoes: obs,
+        picks: topPicks.slice(0, 3).map(p => ({
+          champ: p.champ, score: p.score, avgWR: p.avgWR, worstWR: p.worstWR,
+          synergy: p.synergy, compBonus: p.compBonus,
+          data: { runes: p.data?.runes, build: p.data?.build, ini: p.data?.ini, f: p.data?.f, cls: p.data?.cls },
+        })),
+        best: bestPick?.champ || "",
         fonte: "rule-based",
         proximaAnalise: canDeep ? "disponível" : `${Math.round((VISION_DEBOUNCE-(now-lastVision))/1000)}s`,
       });
@@ -563,7 +574,16 @@ Urgência: alta = perigo imediato | media = objetivo disponível | baixa = está
     }
 
     lastVisionCache = parsed;
-    res.json({ ...parsed, fonte: "ia-textual", pick: parsed.pick || bestPick?.champ || "" });
+    res.json({
+      ...parsed,
+      fonte: "ia-textual",
+      best: parsed.pick || bestPick?.champ || "",
+      picks: topPicks.slice(0, 3).map(p => ({
+        champ: p.champ, score: p.score, avgWR: p.avgWR, worstWR: p.worstWR,
+        synergy: p.synergy, compBonus: p.compBonus,
+        data: { runes: p.data?.runes, build: p.data?.build, ini: p.data?.ini, f: p.data?.f, cls: p.data?.cls },
+      })),
+    });
 
   } catch (e) {
     const d = e.response?.data || e.message;
