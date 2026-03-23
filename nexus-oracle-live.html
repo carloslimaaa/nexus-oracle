@@ -3,17 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nexus Oracle · Determinístico</title>
+<title>Nexus Oracle · Determinístico+</title>
 <style>
 :root{--bg:#07101d;--panel:#0b1830;--line:#203a63;--gold:#f2d084;--txt:#d7e3ff;--muted:#8ca3c8;--accent:#50c7ff;--red:#f26b6b;--green:#58d68d;--amber:#f4c542}
 *{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#07101d,#09162b 40%,#07101d);color:var(--txt);font-family:Arial,sans-serif}
-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);background:rgba(6,12,24,.95);position:sticky;top:0}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);background:rgba(6,12,24,.95);position:sticky;top:0;gap:12px;flex-wrap:wrap}
 h1{margin:0;color:var(--gold);font-size:20px}.muted{color:var(--muted)}
 .main{display:grid;grid-template-columns:340px 1fr 420px;gap:14px;padding:14px}@media (max-width:1200px){.main{grid-template-columns:1fr}}
 .panel{background:linear-gradient(180deg,#0b1830,#0a1630);border:1px solid var(--line);border-radius:16px;overflow:hidden}.panel h2{margin:0;padding:12px 14px;color:var(--gold);font-size:14px;border-bottom:1px solid var(--line)}
 .content{padding:14px}.grid{display:grid;gap:10px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 input,select{width:100%;background:#081427;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:10px 12px}
 button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+button.secondary{background:#0a2140}
 .tabs{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}.tab{padding:8px 10px;border-radius:999px;background:#0a2140;border:1px solid #2a4f81;color:var(--muted);cursor:pointer}.tab.active{color:var(--gold);border-color:#5ed0ff}
 .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:14px}@media(max-width:800px){.cards{grid-template-columns:1fr}}
 .pick{background:#081427;border:1px solid var(--line);border-radius:14px;padding:12px;cursor:pointer}.pick.active{box-shadow:0 0 0 2px #5ed0ff inset}.pick h3{margin:0 0 6px}.score{font-size:28px;color:var(--accent);font-weight:700}
@@ -21,6 +22,7 @@ button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radi
 .row{display:flex;justify-content:space-between;gap:10px}.list{display:grid;gap:8px}.small{font-size:12px;color:var(--muted)}
 .recbox,.box{background:#081427;border:1px solid var(--line);border-radius:12px;padding:12px}.section{padding:14px;border-top:1px solid var(--line)}
 .kv{display:grid;gap:8px}.kv .row b{color:var(--gold)}
+.good{color:var(--green)} .warn{color:var(--amber)} .bad{color:var(--red)}
 </style>
 </head>
 <body>
@@ -28,6 +30,21 @@ button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radi
   <div><h1>Nexus Oracle</h1><div class="muted">Draft AI determinístico · Solo Queue / Competitive</div></div>
   <div class="muted" id="status">Conectando…</div>
 </header>
+<div style="padding:14px 14px 0 14px">
+  <div id="onboardCard" class="panel">
+    <h2>Onboarding rápido</h2>
+    <div class="content grid2">
+      <div class="box">
+        <div style="font-size:20px;font-weight:700;color:var(--gold)">1 botão = me diga o pick</div>
+        <div class="small" style="margin-top:6px">Clique em <b>Me diga o pick</b>. O sistema tenta auto detectar o draft; se não conseguir, usa o contexto manual.</div>
+      </div>
+      <div class="grid2">
+        <button id="ctaPickBtn" style="font-size:18px;padding:14px 16px">Me diga o pick</button>
+        <button class="secondary" id="hideOnboardingBtn">Ocultar onboarding</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="main">
   <div class="panel">
     <h2>Contexto do draft</h2>
@@ -35,22 +52,33 @@ button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radi
       <div class="grid2">
         <div><label class="small">Role</label><select id="role"><option>mid</option><option>top</option><option>jungle</option><option>adc</option><option>support</option></select></div>
         <div><label class="small">Queue mode</label><select id="queueMode"><option value="solo">Solo Queue</option><option value="competitive">Competitive / Duo</option></select></div>
-        <div><label class="small">Side</label><select id="side"><option value="blue">Blue</option><option value="red">Red</option></select></div>
+      </div>
+      <div class="grid2">
+        <div><label class="small">Side</label><select id="side"><option value="blue">blue</option><option value="red">red</option></select></div>
         <div><label class="small">Pick order</label><select id="pickOrder"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option></select></div>
       </div>
       <div><label class="small">Aliados</label><input id="allies" placeholder="Vi, Nautilus"></div>
       <div><label class="small">Inimigos</label><input id="enemies" placeholder="Ahri, Sejuani"></div>
       <div><label class="small">Bans</label><input id="bans" placeholder="Akali, Yasuo"></div>
-      <div><label class="small">Champion pool / comfort (ex.: ahri:40, syndra:10)</label><input id="comfort" placeholder="ahri:40, lissandra:12"></div>
-      <button id="runBtn">Analisar em 2 segundos</button>
+      <div><label class="small">Champion pool / comfort (ex.: ahri:40, syndra:10)</label><input id="comfort" placeholder="ahri:40, yasuo:20"></div>
+      <div class="grid2">
+        <button id="runBtn">Analisar completo</button>
+        <button class="secondary" id="autoBtn">Auto detect draft</button>
+      </div>
+      <div class="box">
+        <div class="small">Estabilidade / performance</div>
+        <div id="perf" class="list"></div>
+      </div>
+      <div class="box">
+        <div class="small">Resposta</div>
+        <div id="responseBox" class="list"><div class="row"><span>Última resposta</span><b>-</b></div></div>
+      </div>
     </div>
   </div>
 
   <div class="panel">
     <h2>Draft engine</h2>
     <div class="tabs" id="tabs">
-      <div class="tab" data-tab="quick">Quick mode</div>
-      <div class="tab" data-tab="advanced">Advanced</div>
       <div class="tab active" data-tab="top3">Top 3</div>
       <div class="tab" data-tab="blind">Best blind</div>
       <div class="tab" data-tab="punish">Best punish</div>
@@ -67,6 +95,10 @@ button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radi
         <div class="small">Breakdown do score</div>
         <div id="breakdown" class="kv"></div>
       </div>
+      <div class="box" style="margin-top:12px">
+        <div class="small">Por que isso ganha jogo</div>
+        <div id="whyWinGame" class="list"></div>
+      </div>
     </div>
   </div>
 
@@ -75,21 +107,50 @@ button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radi
     <div class="content" id="build"></div>
     <div class="section"><div class="small">Recommendation now</div><div id="rec" class="recbox">Aguardando análise.</div></div>
     <div class="section"><div class="small">Win condition inimiga</div><div id="enemyWin" class="box">Aguardando análise.</div></div>
-    <div class="section"><div class="small">Como vencer essa comp</div><div id="counterPlan" class="box">Aguardando análise.</div></div>
-    <div class="section"><div class="small">Game plan dinâmico</div><div id="gamePlan" class="box">Aguardando análise.</div></div>
+    <div class="section"><div class="small">AI explain melhorada</div><div id="counterPlan" class="box">Aguardando análise.</div></div>
   </div>
 </div>
 <script>
 const byId = id => document.getElementById(id);
 let payload = null;
 let selected = null;
-const PROFILE_KEY = 'nexus_oracle_profile_v2';
-function loadProfile(){ try { return JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}'); } catch { return {}; } }
-function saveProfile(p){ localStorage.setItem(PROFILE_KEY, JSON.stringify(p)); }
-function bumpComfort(champ){ if(!champ) return; const p = loadProfile(); p[champ] = (p[champ] || 0) + 1; saveProfile(p); }
+
+function updateResponseBox(ms, cached=false){
+  byId('responseBox').innerHTML = `
+    <div class="row"><span>Última resposta</span><b>${ms ?? '-'} ms</b></div>
+    <div class="row"><span>Cache</span><b>${cached ? 'hit' : 'miss'}</b></div>
+    <div class="row"><span>Meta UX</span><b>${ms != null && ms <= 300 ? 'ok' : 'ajustar'}</b></div>`;
+}
+async function instantPick(){
+  const body = {
+    context: {
+      role: byId('role').value,
+      queueMode: byId('queueMode').value,
+      side: byId('side').value,
+      pickOrder: Number(byId('pickOrder').value),
+      allies: byId('allies').value,
+      enemies: byId('enemies').value,
+      bans: byId('bans').value
+    },
+    playerProfile: { comfort: comfortMap() }
+  };
+  const r = await fetch('/instant-pick', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const d = await r.json();
+  updateResponseBox(d.responseMs, false);
+  if (d.autoContext?.role) byId('role').value = d.autoContext.role;
+  if (d.autoContext?.side) byId('side').value = d.autoContext.side;
+  const best = d.bestPick;
+  if (best){
+    byId('rec').innerHTML = `<div><b>Lock ${best.champ}</b></div><div class="small">Confidence ${best.confidence}% · ${d.responseMs} ms</div><div>${(best.reasons||[])[0] || ''}</div>`;
+  } else {
+    byId('rec').innerHTML = 'Revele mais picks para aumentar a confiança.';
+  }
+}
+
+
 function comfortMap(){
   const raw = byId('comfort').value.trim();
-  const out = { ...loadProfile() };
+  const out = {};
   raw.split(/[,;]+/).map(s=>s.trim()).filter(Boolean).forEach(pair=>{
     const [k,v] = pair.split(':');
     if (k && v) out[k.trim()] = Number(v) || 0;
@@ -99,20 +160,22 @@ function comfortMap(){
 async function connect(){
   const r = await fetch('/status');
   const d = await r.json();
-  byId('status').textContent = d.status==='ok' ? `Online · ${d.mode} · patch ${d.patch}` : 'Offline';
+  byId('status').textContent = d.status==='ok' ? `Online · auto-detect ${d.liveClient ? 'live client' : 'manual'} · avg ${d.avgAnalyzeMs || 0} ms` : 'Offline';
+  byId('perf').innerHTML = `
+    <div class="row"><span>Analyze count</span><b>${d.metrics?.analyzeCount ?? 0}</b></div>
+    <div class="row"><span>Avg ms</span><b>${d.metrics?.avgAnalyzeMs ?? 0}</b></div>
+    <div class="row"><span>Last ms</span><b>${d.metrics?.lastAnalyzeMs ?? 0}</b></div>
+    <div class="row"><span>Concurrent</span><b>${d.metrics?.concurrentAnalyze ?? 0}</b></div>
+    <div class="row"><span>Max concurrent</span><b>${d.metrics?.maxConcurrentAnalyze ?? 0}</b></div>
+    <div class="row"><span>Errors</span><b>${d.metrics?.errors ?? 0}</b></div>`;
 }
 function activeTab(){ return document.querySelector('.tab.active')?.dataset.tab || 'top3'; }
 function currentList(){
   if (!payload) return [];
   const t = activeTab();
-  if (t === 'quick' || t === 'advanced' || t === 'top3') return payload.picks;
-  return (payload.categories[t] || []);
+  return t === 'top3' ? payload.picks : (payload.categories[t] || []);
 }
-function selectPickByKey(key){
-  selected = key;
-  bumpComfort(key);
-  analyze();
-}
+function selectPickByKey(key){ selected = key; render(); }
 function currentPick(){
   const all = [...(payload?.picks||[]), ...(payload?.categories?.blind||[]), ...(payload?.categories?.punish||[]), ...(payload?.categories?.comfort||[]), ...(payload?.categories?.compFit||[])];
   return all.find(x=>x.champKey===selected) || all[0] || null;
@@ -125,7 +188,6 @@ function renderCards(){
     <div class="score">${p.score}</div>
     <div class="small">Confidence ${p.confidence}% · WR ${p.avgWR}%</div>
     <div class="badges">${(p.labels||[]).map(l=>`<span class="badge">${l}</span>`).join('')}</div>
-    ${activeTab()==='quick' ? `<div class=\"small\">${(p.reasons||[])[0] || ''}</div>` : ''}
   </div>`).join('');
 }
 function renderPickMeta(){
@@ -133,6 +195,7 @@ function renderPickMeta(){
   if (!p) return;
   byId('why').innerHTML = (p.reasons||[]).map(r=>`<div>✔ ${r}</div>`).join('');
   byId('riskPlan').innerHTML = `<div>⚠ ${p.risk}</div><div>🧭 ${p.plan10}</div>`;
+  byId('whyWinGame').innerHTML = `<div>🏆 ${p.whyWins || 'Sem explicação adicional.'}</div>`;
   const b = p.breakdown || {};
   byId('breakdown').innerHTML = `
     <div class="row"><span>Matchup</span><b>${b.matchup ?? '-'}</b></div>
@@ -144,27 +207,13 @@ function renderPickMeta(){
     <div class="row"><span>Comfort</span><b>${b.comfort ?? '-'}</b></div>
     <div class="row"><span>Meta confidence</span><b>${b.meta ?? '-'}</b></div>
     <div class="row"><span>Risk</span><b>${b.risk ?? '-'}</b></div>`;
-  renderSummary();
 }
-
-function renderSummary(){
-  const s = payload?.summary || {};
-  let extra = '';
-  if (s.enemyWinCondition) {
-    extra += `<div class="box" style="margin-top:12px"><div class="small">Win condition inimiga</div><div><b>${s.enemyWinCondition.label}</b></div><div class="small">${s.enemyWinCondition.explanation}</div></div>`;
-  }
-  if (s.counterPlan) {
-    extra += `<div class="box" style="margin-top:12px"><div class="small">Como vencer isso</div><div><b>${s.counterPlan.title}</b></div><div class="list">${(s.counterPlan.bullets||[]).map(x=>`<div>• ${x}</div>`).join('')}</div></div>`;
-  }
-  byId('rec').insertAdjacentHTML('afterend', `<div id="summaryWrap">${extra}</div>`);
-}
-
 function renderBuild(){
   const b = payload?.selectedBuild;
   if (!b) { byId('build').innerHTML = '<div class="muted">Sem build disponível.</div>'; return; }
   byId('build').innerHTML = `
     <div class="list">
-      <div><b>${b.champion}</b> · ${b.role} · ${b.cls}</div>
+      <div><b>${b.champion}</b> · ${b.role} · ${b.cls || ''}</div>
       <div class="small">Summoner spells</div>
       <div>${(b.spells||[]).join(' · ') || '-'}</div>
       <div class="small">Starter</div>
@@ -182,38 +231,13 @@ function renderBuild(){
 function renderRec(){
   const r = payload?.recommendation;
   byId('rec').innerHTML = r ? `<div><b>${r.action}</b></div><div class="small">${r.urgency}</div><div>${r.details}</div>` : 'Aguardando análise.';
+  const ew = payload?.summary?.enemyWinCondition;
+  byId('enemyWin').innerHTML = ew ? `<div><b>${ew.label}</b></div><div class="small">${ew.explanation}</div>` : 'Sem leitura de comp ainda.';
+  const cp = payload?.summary?.counterPlan;
+  byId('counterPlan').innerHTML = cp ? `<div><b>${cp.title}</b></div><div class="small" style="margin-top:6px">${cp.why || ''}</div><div class="list" style="margin-top:8px">${(cp.bullets||[]).map(x=>`<div>• ${x}</div>`).join('')}</div>` : 'Sem plano ainda.';
 }
-
-function renderEnemySummary(){
-  const s = payload?.summary || {};
-  const ew = s.enemyWinCondition || payload?.recommendations?.enemyWinCondition;
-  const cs = s.counterStrategy || payload?.recommendations?.counterStrategy;
-  const gp = s.gamePlan || payload?.recommendations?.gamePlan;
-  const ps = s.playstyle || payload?.recommendations?.playstyle;
-
-  byId('enemyWin').innerHTML = ew
-    ? `<div><b>${ew.label}</b></div><div class="small">${ew.explanation}</div>`
-    : 'Sem leitura de comp ainda.';
-
-  byId('counterPlan').innerHTML = cs
-    ? `<div><b>${cs.title}</b></div>
-       <div class="small" style="margin-top:6px">Plano</div><div>${cs.pickPlan}</div>
-       <div class="small" style="margin-top:8px">Macro</div><div>${cs.macro}</div>
-       <div class="small" style="margin-top:8px">Evite</div><div>${cs.avoid}</div>`
-    : 'Sem counter-strategy disponível.';
-
-  byId('gamePlan').innerHTML = gp
-    ? `<div class="badge">${ps || 'control'}</div>
-       <div class="small" style="margin-top:8px">Early</div><div>${gp.early}</div>
-       <div class="small" style="margin-top:8px">Mid</div><div>${gp.mid}</div>
-       <div class="small" style="margin-top:8px">Late</div><div>${gp.late}</div>
-       <div class="small" style="margin-top:8px">Macro</div>
-       <div class="list">${(gp.macro||[]).map(x=>`<div>• ${x}</div>`).join('')}</div>`
-    : 'Sem game plan dinâmico ainda.';
-}
-
-function render(){ const sw = document.getElementById('summaryWrap'); if (sw) sw.remove(); renderCards(); renderPickMeta(); renderBuild(); renderRec(); }
-async function analyze(){
+function render(){ renderCards(); renderPickMeta(); renderBuild(); renderRec(); }
+async function analyze(useAuto=false){
   const body = {
     role: byId('role').value,
     queueMode: byId('queueMode').value,
@@ -223,18 +247,27 @@ async function analyze(){
     enemies: byId('enemies').value,
     bans: byId('bans').value,
     selectedPick: selected,
+    autoDetect: useAuto,
     playerProfile: { comfort: comfortMap() }
   };
   const r = await fetch('/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
   payload = await r.json();
+  updateResponseBox(payload.responseMs, payload.cached);
+  if (useAuto && payload?.autoContext?.available){
+    byId('role').value = payload.ctx.role || byId('role').value;
+    byId('side').value = payload.ctx.side || byId('side').value;
+    byId('pickOrder').value = String(payload.ctx.pickOrder || byId('pickOrder').value);
+  }
   selected = selected || payload?.picks?.[0]?.champKey || null;
   render();
+  connect();
 }
 window.selectPickByKey = selectPickByKey;
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); render(); });
-byId('runBtn').onclick = analyze;
-const savedProfile = loadProfile();
-if (Object.keys(savedProfile).length && !byId('comfort').value) { byId('comfort').value = Object.entries(savedProfile).slice(0,8).map(([k,v])=>`${k}:${v}`).join(', '); }
+byId('runBtn').onclick = ()=>analyze(false);
+byId('autoBtn').onclick = ()=>analyze(true);
+byId('ctaPickBtn').onclick = ()=>instantPick();
+byId('hideOnboardingBtn').onclick = ()=>{ const el = byId('onboardCard'); if (el) el.style.display='none'; };
 connect();
 </script>
 </body>

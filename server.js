@@ -1,9 +1,12 @@
+
 import express from 'express';
 import cors from 'cors';
 import https from 'https';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { D, ALIASES, findChamp } from './dataset.js';
+import { D, ALIASES } from './dataset.js';
 
 const app = express();
 app.use(cors());
@@ -16,7 +19,45 @@ const LIVE_AGENT = process.env.NODE_ENV === 'development'
   ? new https.Agent({ rejectUnauthorized:false })
   : undefined;
 
+// Local LCU must always skip cert validation because Riot ships self-signed local certs.
+const LCU_AGENT = new https.Agent({ rejectUnauthorized:false, keepAlive:true, maxSockets:4 });
+
 const roles = ['top','jungle','mid','adc','support','sup'];
+
+
+const PICK_CACHE = new Map();
+const CACHE_TTL_MS = 10_000;
+
+function stableStringify(obj){
+  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return '[' + obj.map(stableStringify).join(',') + ']';
+  return '{' + Object.keys(obj).sort().map(k => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
+}
+function cacheGet(key){
+  const hit = PICK_CACHE.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.ts > CACHE_TTL_MS){ PICK_CACHE.delete(key); return null; }
+  return hit.value;
+}
+function cacheSet(key, value){
+  PICK_CACHE.set(key, { ts: Date.now(), value });
+  if (PICK_CACHE.size > 200){
+    const first = PICK_CACHE.keys().next().value;
+    if (first) PICK_CACHE.delete(first);
+  }
+}
+
+const stats = {
+  startedAt: new Date().toISOString(),
+  analyzeCount: 0,
+  analyzeErrors: 0,
+  avgAnalyzeMs: 0,
+  lastAnalyzeMs: 0,
+  concurrentAnalyze: 0,
+  maxConcurrentAnalyze: 0,
+  autoContextHits: 0,
+  autoContextMisses: 0
+};
 
 function norm(s=''){
   return String(s).toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
@@ -26,7 +67,7 @@ function champKey(name=''){
   return ALIASES[key] || key;
 }
 function title(k=''){
-  return D[k]?.name || k;
+  return D[k]?.name || k.charAt(0).toUpperCase() + k.slice(1);
 }
 function parseList(input){
   if (Array.isArray(input)) return input.map(champKey).filter(Boolean);
@@ -78,9 +119,9 @@ function enemyShape(enemies=[]){
   const engage = enemies.reduce((s,k)=>s+getTag(k,'engage'),0);
   const antiDive = enemies.reduce((s,k)=>s+getTag(k,'antiDive'),0);
   const scaling = enemies.reduce((s,k)=>s+getTag(k,'scaling'),0);
-  return { engage, antiDive, scaling };
+  const poke = enemies.reduce((s,k)=>s+getTag(k,'poke'),0);
+  return { engage, antiDive, scaling, poke };
 }
-
 
 function detectEnemyWinCondition(enemies=''){
   const enemyKeys = Array.isArray(enemies) ? enemies.map(champKey) : parseList(enemies).map(champKey);
@@ -112,102 +153,6 @@ function detectEnemyWinCondition(enemies=''){
     explanation = 'A comp inimiga quer pressão lateral e quebrar a estrutura do mapa.';
   }
   return { label, explanation, tags: tagsAgg };
-}
-
-
-function counterStrategyFromWinCondition(enemyWin, bestPickKey='', ctx={}){
-  const champ = D[bestPickKey] || {};
-  const antiDive = getTag(bestPickKey,'antiDive');
-  const peel = getTag(bestPickKey,'peel');
-  const pick = getTag(bestPickKey,'pick');
-  const scaling = getTag(bestPickKey,'scaling');
-  const lanePrio = getTag(bestPickKey,'lanePrio');
-  const engage = getTag(bestPickKey,'engage');
-
-  if (enemyWin.label === 'dive / pick') {
-    return {
-      title: 'Counter dive / pick',
-      pickPlan: antiDive >= 2 || peel >= 2 ? 'Peel first, punish overcommit, play around cooldowns.' : 'Do not side lane greedily; layer CC and keep spacing for counter-engage.',
-      macro: 'Ward deep entries before objectives and group 15–20s earlier than usual.',
-      avoid: 'Avoid isolated side lane waves without vision and flash tracking.'
-    };
-  }
-  if (enemyWin.label === 'poke / siege') {
-    return {
-      title: 'Counter poke / siege',
-      pickPlan: engage >= 2 ? 'Force faster windows after push timings and threaten flank angles.' : 'Hold HP bars, contest vision in 2-man groups, and avoid entering objective late.',
-      macro: 'Secure side wave first, then move as a unit to deny setup.',
-      avoid: 'Avoid face-checking chokes after enemy gets first vision control.'
-    };
-  }
-  if (enemyWin.label === 'scale / teamfight') {
-    return {
-      title: 'Punish scaling comp',
-      pickPlan: lanePrio >= 2 || pick >= 2 ? 'Accelerate early tempo with push, roam, and first objective setup.' or 'Trade faster windows and deny comfortable resets before major objectives.',
-      macro: 'Use lane priority to create first move on river and force tempo before 2-item spikes.',
-      avoid: 'Avoid passive neutral states where enemy comp scales for free.'
-    };
-  }
-  if (enemyWin.label === 'side lane') {
-    return {
-      title: 'Control side lane pressure',
-      pickPlan: scaling >= 2 ? 'Match side safely, then play for stronger 5v5 windows.' : 'Collapse first on overextended side laner with support/jungle timing.',
-      macro: 'Track side waves 45–60s before objective and force them to choose between side pressure and setup.',
-      avoid: 'Avoid chasing too deep on side while objective timers are spawning.'
-    };
-  }
-  return {
-    title: 'Balanced answer',
-    pickPlan: 'Play around your strongest setup tool and contest vision before committing.',
-    macro: 'Sync wave states with objective timers and move first with priority lanes.',
-    avoid: 'Avoid coinflip fights without cooldown or wave advantage.'
-  };
-}
-
-function adaptivePlaystyle(champKey, ctx={}){
-  const safe = getProfile(champKey,'safe');
-  const snowball = getProfile(champKey,'snowball');
-  const scaling = getTag(champKey,'scaling');
-  const lanePrio = getTag(champKey,'lanePrio');
-  const enemy = enemyShape(ctx.enemies || []);
-  if (snowball >= 3 && lanePrio >= 2 && enemy.scaling >= 5) return 'aggressive';
-  if (safe >= 2 && scaling >= 2) return 'scaling';
-  return 'control';
-}
-
-function dynamicGamePlan(champKey, ctx={}, enemyWin=null){
-  const playstyle = adaptivePlaystyle(champKey, ctx);
-  const roam = getTag(champKey,'roam');
-  const lanePrio = getTag(champKey,'lanePrio');
-  const scaling = getTag(champKey,'scaling');
-
-  const early = playstyle === 'aggressive'
-    ? (lanePrio >= 2 ? 'Push first waves, contest river timing, and look for first move with jungle.' : 'Trade around cooldowns and look for punish windows before enemy scales.')
-    : playstyle === 'scaling'
-      ? 'Protect HP and wave state early; avoid low-value skirmishes before key item spikes.'
-      : 'Maintain mid control, preserve summoners, and use vision to deny enemy initiative.';
-
-  const mid = enemyWin?.label === 'dive / pick'
-    ? 'Group earlier around objectives, hold peel tools, and force enemies to enter your vision.'
-    : enemyWin?.label === 'poke / siege'
-      ? 'Take side wave first and flank or engage before enemy finishes siege setup.'
-      : enemyWin?.label === 'scale / teamfight'
-        ? 'Accelerate tempo through resets, objective setups, and picks on isolated targets.'
-        : 'Use side pressure to create numbers advantage before neutral fights.';
-
-  const late = scaling >= 2
-    ? 'Prioritize clean front-to-back execution and objective discipline over coinflip flanks.'
-    : 'Look for pick angles on key carries before committing to full 5v5.';
-
-  const macro = [
-    'Track objective timers 60 seconds ahead.',
-    lanePrio >= 2 ? 'Crash the nearest wave before moving to river.' : 'Give up one wave if needed to arrive first to setup.',
-    enemyWin?.label === 'side lane'
-      ? 'Do not overchase side pressure when Baron/Dragon setup starts.'
-      : 'Use vision denial to force enemy into your setup window.'
-  ];
-
-  return { playstyle, early, mid, late, macro };
 }
 
 function draftStage(ctx){
@@ -244,7 +189,7 @@ function calcDamageFit(champ, allies=[]){
   let score = 50;
   if (dmg.ad > dmg.ap) score += ap * 10;
   if (dmg.ap > dmg.ad) score += ad * 10;
-  if (dmg.ap === 0 && dmg.ad === 0) score += ap >= ad ? 10 : 10;
+  if (dmg.ap === 0 && dmg.ad === 0) score += 10;
   return clamp(score,0,100);
 }
 function calcEngageFit(champ, allies=[], enemies=[]){
@@ -253,7 +198,7 @@ function calcEngageFit(champ, allies=[], enemies=[]){
   let score = 50;
   if (need.needsEngage) score += getTag(champ,'engage') * 7;
   if (enemy.engage >= 6) score += getTag(champ,'antiDive') * 8 + getTag(champ,'peel') * 4;
-  if (enemy.antiDive >= 5) score += getTag(champ,'poke') * 4;
+  if (enemy.antiDive >= 5 || enemy.poke >= 6) score += getTag(champ,'poke') * 4;
   return clamp(score,0,100);
 }
 function calcLanePriorityScore(champ){
@@ -290,24 +235,24 @@ function computeConfidence(metrics, ctx){
   if (ctx.pickOrder >= 8 && metrics.comp > 60) conf += 3;
   return clamp(conf, 0, 100);
 }
-function categoryScores(champ, metrics, ctx={}){
+function categoryScores(champ, metrics){
   const profile = champProfile(champ);
-  const stage = draftStage(ctx);
-  const lateDraftBonus = stage === 'late' ? 6 : 0;
   return {
     blind: clamp(metrics.comp*0.28 + metrics.meta*0.18 + metrics.riskInverse*0.28 + metrics.lanePrio*0.16 + (profile.safe||0)*4, 0, 100),
-    punish: clamp(metrics.matchup*0.42 + metrics.pick*0.18 + metrics.synergy*0.10 + metrics.lanePrio*0.10 + lateDraftBonus + (profile.counterpick||0)*5, 0, 100),
+    punish: clamp(metrics.matchup*0.42 + metrics.pick*0.18 + metrics.synergy*0.10 + metrics.lanePrio*0.10 + (profile.counterpick||0)*5, 0, 100),
     comfort: clamp(metrics.comfort*0.50 + metrics.matchup*0.15 + metrics.meta*0.10 + metrics.riskInverse*0.10 + (profile.safe||0)*5, 0, 100),
-    compFit: clamp(metrics.comp*0.40 + metrics.damageFit*0.18 + metrics.engageFit*0.18 + metrics.synergy*0.14 + metrics.teamfight*0.10, 0, 100)
+    compFit: clamp(metrics.comp*0.40 + metrics.damageFit*0.18 + metrics.engageFit*0.18 + metrics.synergy*0.14 + (40 + getTag(champ,'teamfight')*20)*0.10, 0, 100)
   };
 }
 function whyReasons(champ, metrics, ctx){
+  const enemyWin = detectEnemyWinCondition(ctx.enemies);
   const out=[];
-  if (metrics.matchup >= 55) out.push(`Matchup favorável contra draft revelado (${Math.round(metrics.matchup)})`);
-  if (metrics.synergy >= 58) out.push(`Sinergia forte com aliados (${Math.round(metrics.synergy)})`);
+  if (metrics.matchup >= 55) out.push(`Tem matchup favorável contra os picks revelados (${Math.round(metrics.matchup)})`);
+  if (metrics.synergy >= 58) out.push(`Conecta bem com seus aliados (${Math.round(metrics.synergy)})`);
   if (metrics.comp >= 58) out.push('Corrige necessidades da composição aliada');
   if (metrics.damageFit >= 58) out.push('Melhora o perfil de dano do time');
-  if (metrics.engageFit >= 58) out.push('Se encaixa bem no padrão de engage/disengage');
+  if (enemyWin.label === 'dive / pick' && (getTag(champ,'antiDive') >= 2 || getTag(champ,'peel') >= 2)) out.push('Ajuda a travar a condição de vitória inimiga de dive/pick');
+  if (enemyWin.label === 'poke / siege' && getTag(champ,'engage') >= 2) out.push('Cria janela de engage para quebrar poke/siege');
   if (!out.length) out.push('Pick estável para o estado atual do draft');
   return out.slice(0,3);
 }
@@ -316,7 +261,62 @@ function riskText(champ, metrics){
   if (metrics.risk >= 12) return 'Risco moderado: precisa de disciplina em tempo de engage.';
   return 'Baixo risco relativo para o draft atual.';
 }
-function plan10(champ, metrics, ctx={}){
+function counterWinConditionPlan(enemyWin, ctx={}, pickKey=''){
+  const cls = D[pickKey]?.cls || '';
+  switch(enemyWin?.label){
+    case 'dive / pick':
+      return {
+        title: 'Neutralizar dive / pick',
+        why: 'O inimigo quer achar pick em fog e forçar engage curto antes de você responder.',
+        bullets: [
+          'Jogue com visão profunda antes de avançar side lane.',
+          'Segure recursos para counter-engage e peel do carry principal.',
+          cls.includes('mago') || cls.includes('adc') ? 'Respeite flank sem flash; lute front-to-back.' : 'Marque o iniciador inimigo antes da fight abrir.'
+        ]
+      };
+    case 'poke / siege':
+      return {
+        title: 'Quebrar poke / siege',
+        why: 'O inimigo quer te desgastar antes do objetivo e te obrigar a entrar sem HP.',
+        bullets: [
+          'Evite perder HP antes do objetivo; reset cedo e volte agrupado.',
+          'Busque flank, pick ou engage curto em janela de cooldown inimiga.',
+          'Empurre wave lateral antes de contestar para não entrar em choke ruim.'
+        ]
+      };
+    case 'scale / teamfight':
+      return {
+        title: 'Punir scaling inimigo',
+        why: 'O inimigo fica mais forte quanto mais organizado o 5v5 e quanto mais o jogo alonga.',
+        bullets: [
+          'Jogue por tempo e prioridade de lane nos primeiros 10 minutos.',
+          'Acelere dragões/torres e procure pick antes do 5v5 ideal deles.',
+          'Evite lutas longas e organizadas qu&&o eles estiverem em spike.'
+        ]
+      };
+    case 'side lane':
+      return {
+        title: 'Responder side lane',
+        why: 'O inimigo quer quebrar sua estrutura lateral e forçar reação tardia no mapa.',
+        bullets: [
+          'Controle visão nas laterais e não perca tempo reagindo tarde.',
+          'Force objetivo no lado oposto qu&&o o split estiver mostrado.',
+          'Mantenha wave states estáveis para não ceder torre de graça.'
+        ]
+      };
+    default:
+      return {
+        title: 'Plano geral de draft',
+        why: 'A comp inimiga não expõe uma condição única forte ainda.',
+        bullets: [
+          'Jogue por informação e tempo de wave.',
+          'Priorize objetivo qu&&o tiver número ou visão melhor.',
+          'Não force luta sem condição clara de engage ou pick.'
+        ]
+      };
+  }
+}
+function plan10(champ, metrics, ctx){
   const tips = D[champ]?.d || [];
   const enemyWin = detectEnemyWinCondition(ctx.enemies || []);
   const base = tips[0] || 'Jogue pelos primeiros objetivos com disciplina de wave.';
@@ -330,14 +330,30 @@ function plan10(champ, metrics, ctx={}){
     return `${base} Acelere prio de lane e tente criar janela de pick antes da comp inimiga chegar no 5v5 ideal.`;
   }
   if (enemyWin.label === 'side lane') {
-    return `${base} Controle sides cedo, responda visão lateral e force objetivos quando o split estiver mostrado.`;
+    return `${base} Controle sides cedo, responda visão lateral e force objetivos qu&&o o split estiver mostrado.`;
   }
   if (metrics.lanePrio >= 65) return `${base} Priorize pressão de lane e primeiro movimento para rio.`;
   if (metrics.matchup < 48) return `${base} Respeite prioridade inimiga e jogue por reset/visão.`;
   return `${base} Procure skirmishes só com informação e tempo de wave.`;
 }
+function whyThisWinsGame(champ, metrics, ctx){
+  const enemyWin = detectEnemyWinCondition(ctx.enemies || []);
+  if (enemyWin.label === 'dive / pick' && (getTag(champ,'antiDive') >= 2 || getTag(champ,'peel') >= 2)) {
+    return 'Ganha jogo porque reduz o valor do engage inimigo e força fights mais longas e previsíveis.';
+  }
+  if (enemyWin.label === 'poke / siege' && getTag(champ,'engage') >= 2) {
+    return 'Ganha jogo porque cria janela de engage ou flank antes do setup inimigo ficar perfeito.';
+  }
+  if (enemyWin.label === 'scale / teamfight' && (metrics.lanePrio >= 60 || metrics.matchup >= 55)) {
+    return 'Ganha jogo porque acelera o mapa antes da comp inimiga chegar no pico ideal de 5v5.';
+  }
+  if (enemyWin.label === 'side lane' && (getTag(champ,'pick') >= 2 || getTag(champ,'roam') >= 2)) {
+    return 'Ganha jogo porque responde pressão lateral com prioridade e ameaça de collapse.';
+  }
+  return 'Ganha jogo porque melhora seu draft em matchup, sinergia e execução prática do plano.';
+}
 
-function scoreCandidate(champ, ctx){
+function scoreC&&idate(champ, ctx){
   const matchup = calcMatchupScore(champ, ctx.enemies);
   const synergy = calcSynergyScore(champ, ctx.allies);
   const comp = calcTeamCompFit(champ, ctx.allies);
@@ -366,7 +382,7 @@ function scoreCandidate(champ, ctx){
 
   const metrics = { matchup, synergy, comp, damageFit, engageFit, lanePrio, comfort, meta, risk, riskInverse, pick };
   const conf = computeConfidence(metrics, ctx);
-  const cats = categoryScores(champ, metrics, ctx);
+  const cats = categoryScores(champ, metrics);
 
   const labels = [];
   if (cats.blind >= 65) labels.push('Blind');
@@ -376,7 +392,7 @@ function scoreCandidate(champ, ctx){
 
   return {
     champKey: champ,
-    champ: D[champ]?.name || champ,
+    champ: D[champ]?.name || title(champ),
     role: D[champ]?.role || ctx.role,
     score: Math.round(score),
     confidence: Math.round(conf),
@@ -384,8 +400,9 @@ function scoreCandidate(champ, ctx){
     worstWR: Math.round(matchup),
     labels,
     reasons: whyReasons(champ, metrics, ctx),
+    whyWins: whyThisWinsGame(champ, metrics, ctx),
     risk: riskText(champ, metrics),
-    plan10: plan10(champ, metrics),
+    plan10: plan10(champ, metrics, ctx),
     breakdown: {
       matchup: Math.round(matchup),
       synergy: Math.round(synergy),
@@ -401,59 +418,7 @@ function scoreCandidate(champ, ctx){
   };
 }
 
-
-function counterWinConditionPlan(enemyWin, ctx={}, pickKey=''){
-  const cls = D[pickKey]?.cls || '';
-  switch(enemyWin?.label){
-    case 'dive / pick':
-      return {
-        title: 'Neutralizar dive / pick',
-        bullets: [
-          'Jogue com visão profunda antes de avançar side lane.',
-          'Segure recursos para counter-engage e peel do carry principal.',
-          cls.includes('mago') || cls.includes('adc') ? 'Respeite flank sem flash; lute front-to-back.' : 'Procure marcar o iniciador inimigo antes da fight abrir.'
-        ]
-      };
-    case 'poke / siege':
-      return {
-        title: 'Quebrar poke / siege',
-        bullets: [
-          'Evite perder HP antes do objetivo; reset cedo e volte agrupado.',
-          'Busque flank, pick ou engage curto em janela de cooldown inimiga.',
-          'Empurre wave lateral antes de contestar para não entrar em choke ruim.'
-        ]
-      };
-    case 'scale / teamfight':
-      return {
-        title: 'Punir scaling inimigo',
-        bullets: [
-          'Jogue por tempo e prioridade de lane nos primeiros 10 minutos.',
-          'Acelere dragões/torres e procure pick antes do 5v5 ideal deles.',
-          'Evite lutas longas e organizadas quando eles estiverem em spike.'
-        ]
-      };
-    case 'side lane':
-      return {
-        title: 'Responder side lane',
-        bullets: [
-          'Controle visão nas laterais e não perca tempo reagindo tarde.',
-          'Force objetivo no lado oposto quando o split estiver mostrado.',
-          'Mantenha wave states estáveis para não ceder torre de graça.'
-        ]
-      };
-    default:
-      return {
-        title: 'Plano geral de draft',
-        bullets: [
-          'Jogue por informação e tempo de wave.',
-          'Priorize objetivo quando tiver número ou visão melhor.',
-          'Não force luta sem condição clara de engage ou pick.'
-        ]
-      };
-  }
-}
-
-function filterCandidates(ctx){
+function filterC&&idates(ctx){
   return Object.keys(D).filter(k => D[k].role === ctx.role && !ctx.bans.includes(k));
 }
 function topBy(results, key){
@@ -463,9 +428,9 @@ function buildPayloadForChamp(champKey){
   const c = D[champKey];
   if (!c) return null;
   return {
-    champion: c.name,
+    champion: c.name || title(champKey),
     role: c.role,
-    cls: c.cls,
+    cls: c.cls || '',
     spells: c.f || [],
     starter: c.ini || '',
     runes: c.runes || {},
@@ -474,16 +439,182 @@ function buildPayloadForChamp(champKey){
   };
 }
 
+// ---- Stability / performance helpers ----
+const PERF = {
+  llSourceEnabled: false,
+  requestCount: 0,
+  errors: 0
+};
+function withAnalyzeMetrics(fn){
+  return async (req,res)=>{
+    const start = Date.now();
+    stats.concurrentAnalyze += 1;
+    stats.maxConcurrentAnalyze = Math.max(stats.maxConcurrentAnalyze, stats.concurrentAnalyze);
+    PERF.requestCount += 1;
+    try {
+      await fn(req,res);
+    } catch (err) {
+      stats.analyzeErrors += 1;
+      PERF.errors += 1;
+      res.status(500).json({ error: err?.message || 'internal_error' });
+    } finally {
+      const ms = Date.now() - start;
+      stats.analyzeCount += 1;
+      stats.lastAnalyzeMs = ms;
+      stats.avgAnalyzeMs = stats.avgAnalyzeMs
+        ? Math.round(((stats.avgAnalyzeMs * (stats.analyzeCount - 1)) + ms) / stats.analyzeCount)
+        : ms;
+      stats.concurrentAnalyze -= 1;
+    }
+  };
+}
+
+// ---- Automatic champ select detection via local LCU ----
+function c&&idateLockfilePaths(){
+  const home = os.homedir();
+  return [
+    path.join(home, 'AppData', 'Local', 'Riot Games', 'Riot Client', 'Config', 'lockfile'),
+    'C:\\Riot Games\\League of Legends\\lockfile',
+    'D:\\Riot Games\\League of Legends\\lockfile',
+    path.join(home, 'Riot Games', 'League of Legends', 'lockfile')
+  ];
+}
+function readLockfile(){
+  for (const p of c&&idateLockfilePaths()){
+    try{
+      if (fs.existsSync(p)){
+        const raw = fs.readFileSync(p,'utf8').trim();
+        const [name,pid,port,password,protocol] = raw.split(':');
+        if (port && password) return { path:p, name, pid, port, password, protocol };
+      }
+    }catch{}
+  }
+  return null;
+}
+async function lcuGet(lock, endpoint){
+  const auth = Buffer.from(`riot:${lock.password}`).toString('base64');
+  const url = `${lock.protocol || 'https'}://127.0.0.1:${lock.port}${endpoint}`;
+  return await new Promise((resolve,reject)=>{
+    const req = https.request(url, {
+      method:'GET',
+      headers:{ Authorization:`Basic ${auth}` },
+      agent: LCU_AGENT
+    }, res=>{
+      let buf='';
+      res.on('data', c=>buf += c);
+      res.on('end', ()=>{
+        try{
+          if (res.statusCode >= 200 && res.statusCode < 300){
+            resolve(buf ? JSON.parse(buf) : null);
+          }else reject(new Error(`LCU_${res.statusCode}`));
+        }catch(e){ reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+async function getChampionIdMap(){
+  const out = {};
+  for (const [k,v] of Object.entries(D)) {
+    if (v?.name) out[v.name.toLowerCase()] = k;
+  }
+  return out;
+}
+function positionToRole(pos=''){
+  const p = String(pos).toLowerCase();
+  if (p.includes('top')) return 'top';
+  if (p.includes('jungle')) return 'jungle';
+  if (p.includes('middle') || p.includes('mid')) return 'mid';
+  if (p.includes('bottom') || p.includes('adc')) return 'adc';
+  if (p.includes('utility') || p.includes('support') || p.includes('sup')) return 'support';
+  return 'mid';
+}
+async function autoDetectChampSelectContext(){
+  const lock = readLockfile();
+  if (!lock) return { available:false, reason:'lockfile_not_found' };
+
+  try{
+    const [session, summoner] = await Promise.all([
+      lcuGet(lock, '/lol-champ-select/v1/session'),
+      lcuGet(lock, '/lol-summoner/v1/current-summoner')
+    ]);
+    if (!session) return { available:false, reason:'session_not_found' };
+    const cellId = session.localPlayerCellId;
+    const myCell = [...(session.myTeam||[]), ...(session.theirTeam||[])].find(x=>x.cellId === cellId) || null;
+    const myTeam = (session.myTeam||[]).map(x=>x.championId).filter(Boolean);
+    const enemyTeam = (session.theirTeam||[]).map(x=>x.championId).filter(Boolean);
+    const bans = [
+      ...((session.bans?.myTeamBans)||[]),
+      ...((session.bans?.theirTeamBans)||[])
+    ].filter(Boolean);
+
+    // current dataset keys are minimal; map champion names if known, else ignore.
+    // Session only gives ids. Without external map, expose ids too.
+    const ctx = {
+      available:true,
+      phase: session.timer?.phase || 'UNKNOWN',
+      source: 'LCU',
+      role: positionToRole(myCell?.assignedPosition || myCell?.position || ''),
+      side: (myCell && myCell.cellId <= 4) ? 'blue' : 'red',
+      pickOrder: (myCell?.cellId ?? 2) + 1,
+      allies: [],
+      enemies: [],
+      bans: [],
+      rawChampionIds: { allies: myTeam, enemies: enemyTeam, bans },
+      localCellId: cellId,
+      summoner: summoner?.displayName || ''
+    };
+    return ctx;
+  } catch (e){
+    return { available:false, reason:'lcu_unavailable', error:String(e.message||e) };
+  }
+}
+
 app.use(express.static(__dirname));
 app.get('/', (req,res)=>res.sendFile(path.join(__dirname, 'nexus-oracle-live.html')));
 app.get('/index.html', (req,res)=>res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/status', (req,res)=>res.json({ ok:true, mode:'deterministic-dataset', liveClient: !!LIVE_AGENT }));
-app.get('/champions', (req,res)=>res.json(Object.keys(D).map(k=>D[k].name).sort()));
+app.get('/status', async (req,res)=>{
+  const auto = await autoDetectChampSelectContext();
+  res.json({
+    ok:true,
+    mode:'deterministic-dataset',
+    liveClient: !!LIVE_AGENT,
+    autoDetect: auto.available,
+    autoPhase: auto.phase || null,
+    llSourceEnabled: PERF.llSourceEnabled,
+    metrics: {
+      analyzeCount: stats.analyzeCount,
+      avgAnalyzeMs: stats.avgAnalyzeMs,
+      lastAnalyzeMs: stats.lastAnalyzeMs,
+      concurrentAnalyze: stats.concurrentAnalyze,
+      maxConcurrentAnalyze: stats.maxConcurrentAnalyze,
+      errors: stats.analyzeErrors
+    }
+  });
+});
+app.get('/metrics', (req,res)=>res.json({ ok:true, stats, perf: PERF }));
+app.get('/champions', (req,res)=>res.json(Object.keys(D).map(k=>D[k].name || title(k)).sort()));
+app.get('/auto-context', withAnalyzeMetrics(async (req,res)=>{
+  const auto = await autoDetectChampSelectContext();
+  if (auto.available) stats.autoContextHits += 1; else stats.autoContextMisses += 1;
+  res.json(auto);
+}));
 
-app.post('/analyze', (req,res)=>{
-  const ctx = validateContext(req.body || {});
-  const candidates = filterCandidates(ctx);
-  const scored = candidates.map(ch=>scoreCandidate(ch, ctx)).sort((a,b)=>b.score-a.score);
+app.post('/analyze', withAnalyzeMetrics(async (req,res)=>{
+  const auto = req.body?.autoDetect ? await autoDetectChampSelectContext() : { available:false };
+  const merged = auto.available ? {
+    ...req.body,
+    role: req.body.role || auto.role,
+    side: req.body.side || auto.side,
+    pickOrder: req.body.pickOrder || auto.pickOrder,
+    allies: req.body.allies || '',
+    enemies: req.body.enemies || '',
+    bans: req.body.bans || ''
+  } : req.body;
+  const ctx = validateContext(merged || {});
+  const c&&idates = filterC&&idates(ctx);
+  const scored = c&&idates.map(ch=>scoreC&&idate(ch, ctx)).sort((a,b)=>b.score-a.score);
   const picks = scored.slice(0,3);
   const categories = {
     blind: topBy(scored,'blind'),
@@ -494,23 +625,24 @@ app.post('/analyze', (req,res)=>{
   const selected = req.body?.selectedPick ? champKey(req.body.selectedPick) : picks[0]?.champKey;
   const enemyWinCondition = detectEnemyWinCondition(ctx.enemies);
   const counterPlan = counterWinConditionPlan(enemyWinCondition, ctx, selected);
+  const topPick = picks[0];
   const recommendation = {
-      urgency: picks[0]?.confidence >= 78 ? 'alta' : (picks[0]?.confidence >= 60 ? 'media' : 'baixa'),
-      action: picks[0] ? `Lock ${picks[0].champ} com confiança` : 'Complete o draft',
-      details: picks[0]?.plan10 || 'Revele mais picks para aumentar a confiança.'
+      urgency: topPick?.confidence >= 80 ? 'alta' : (topPick?.confidence >= 65 ? 'media' : 'baixa'),
+      action: topPick ? `Lock ${topPick.champ} com confiança` : 'Complete o draft',
+      details: topPick ? `${topPick.whyWins} ${topPick.plan10}` : 'Revele mais picks para aumentar a confiança.'
     };
   res.json({
     ctx,
+    autoContext: auto,
     picks,
     categories,
     selectedBuild: buildPayloadForChamp(selected),
     recommendation,
     summary: { enemyWinCondition, counterPlan }
   });
-});
+}));
 
-app.listen(3000, ()=>console.log('Nexus Oracle rodando em http://localhost:3000'));
-
+app.listen(3000, ()=>console.log('Nexus Oracle rod&&o em http://localhost:3000'));
 
 app.post('/profile', (req,res)=>{
   const comfort = req.body?.comfort && typeof req.body.comfort === 'object' ? req.body.comfort : {};
