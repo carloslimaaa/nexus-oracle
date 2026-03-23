@@ -291,7 +291,7 @@ function counterWinConditionPlan(enemyWin, ctx={}, pickKey=''){
         bullets: [
           'Jogue por tempo e prioridade de lane nos primeiros 10 minutos.',
           'Acelere dragões/torres e procure pick antes do 5v5 ideal deles.',
-          'Evite lutas longas e organizadas qu&&o eles estiverem em spike.'
+          'Evite lutas longas e organizadas quando eles estiverem em spike.'
         ]
       };
     case 'side lane':
@@ -300,7 +300,7 @@ function counterWinConditionPlan(enemyWin, ctx={}, pickKey=''){
         why: 'O inimigo quer quebrar sua estrutura lateral e forçar reação tardia no mapa.',
         bullets: [
           'Controle visão nas laterais e não perca tempo reagindo tarde.',
-          'Force objetivo no lado oposto qu&&o o split estiver mostrado.',
+          'Force objetivo no lado oposto quando o split estiver mostrado.',
           'Mantenha wave states estáveis para não ceder torre de graça.'
         ]
       };
@@ -310,7 +310,7 @@ function counterWinConditionPlan(enemyWin, ctx={}, pickKey=''){
         why: 'A comp inimiga não expõe uma condição única forte ainda.',
         bullets: [
           'Jogue por informação e tempo de wave.',
-          'Priorize objetivo qu&&o tiver número ou visão melhor.',
+          'Priorize objetivo quando tiver número ou visão melhor.',
           'Não force luta sem condição clara de engage ou pick.'
         ]
       };
@@ -330,7 +330,7 @@ function plan10(champ, metrics, ctx){
     return `${base} Acelere prio de lane e tente criar janela de pick antes da comp inimiga chegar no 5v5 ideal.`;
   }
   if (enemyWin.label === 'side lane') {
-    return `${base} Controle sides cedo, responda visão lateral e force objetivos qu&&o o split estiver mostrado.`;
+    return `${base} Controle sides cedo, responda visão lateral e force objetivos quando o split estiver mostrado.`;
   }
   if (metrics.lanePrio >= 65) return `${base} Priorize pressão de lane e primeiro movimento para rio.`;
   if (metrics.matchup < 48) return `${base} Respeite prioridade inimiga e jogue por reset/visão.`;
@@ -353,7 +353,7 @@ function whyThisWinsGame(champ, metrics, ctx){
   return 'Ganha jogo porque melhora seu draft em matchup, sinergia e execução prática do plano.';
 }
 
-function scoreC&&idate(champ, ctx){
+function scoreCandidate(champ, ctx){
   const matchup = calcMatchupScore(champ, ctx.enemies);
   const synergy = calcSynergyScore(champ, ctx.allies);
   const comp = calcTeamCompFit(champ, ctx.allies);
@@ -418,7 +418,7 @@ function scoreC&&idate(champ, ctx){
   };
 }
 
-function filterC&&idates(ctx){
+function filterCandidates(ctx){
   return Object.keys(D).filter(k => D[k].role === ctx.role && !ctx.bans.includes(k));
 }
 function topBy(results, key){
@@ -470,7 +470,7 @@ function withAnalyzeMetrics(fn){
 }
 
 // ---- Automatic champ select detection via local LCU ----
-function c&&idateLockfilePaths(){
+function candidateLockfilePaths(){
   const home = os.homedir();
   return [
     path.join(home, 'AppData', 'Local', 'Riot Games', 'Riot Client', 'Config', 'lockfile'),
@@ -480,7 +480,7 @@ function c&&idateLockfilePaths(){
   ];
 }
 function readLockfile(){
-  for (const p of c&&idateLockfilePaths()){
+  for (const p of candidateLockfilePaths()){
     try{
       if (fs.existsSync(p)){
         const raw = fs.readFileSync(p,'utf8').trim();
@@ -613,8 +613,8 @@ app.post('/analyze', withAnalyzeMetrics(async (req,res)=>{
     bans: req.body.bans || ''
   } : req.body;
   const ctx = validateContext(merged || {});
-  const c&&idates = filterC&&idates(ctx);
-  const scored = c&&idates.map(ch=>scoreC&&idate(ch, ctx)).sort((a,b)=>b.score-a.score);
+  const candidates = filterCandidates(ctx);
+  const scored = candidates.map(ch=>scoreCandidate(ch, ctx)).sort((a,b)=>b.score-a.score);
   const picks = scored.slice(0,3);
   const categories = {
     blind: topBy(scored,'blind'),
@@ -642,7 +642,7 @@ app.post('/analyze', withAnalyzeMetrics(async (req,res)=>{
   });
 }));
 
-app.listen(3000, ()=>console.log('Nexus Oracle rod&&o em http://localhost:3000'));
+app.listen(3000, ()=>console.log('Nexus Oracle rodando em http://localhost:3000'));
 
 app.post('/profile', (req,res)=>{
   const comfort = req.body?.comfort && typeof req.body.comfort === 'object' ? req.body.comfort : {};
