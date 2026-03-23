@@ -35,6 +35,8 @@ button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radi
       <div class="grid2">
         <div><label class="small">Role</label><select id="role"><option>mid</option><option>top</option><option>jungle</option><option>adc</option><option>support</option></select></div>
         <div><label class="small">Queue mode</label><select id="queueMode"><option value="solo">Solo Queue</option><option value="competitive">Competitive / Duo</option></select></div>
+        <div><label class="small">Side</label><select id="side"><option value="blue">Blue</option><option value="red">Red</option></select></div>
+        <div><label class="small">Pick order</label><select id="pickOrder"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option></select></div>
       </div>
       <div><label class="small">Aliados</label><input id="allies" placeholder="Vi, Nautilus"></div>
       <div><label class="small">Inimigos</label><input id="enemies" placeholder="Ahri, Sejuani"></div>
@@ -47,6 +49,8 @@ button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radi
   <div class="panel">
     <h2>Draft engine</h2>
     <div class="tabs" id="tabs">
+      <div class="tab" data-tab="quick">Quick mode</div>
+      <div class="tab" data-tab="advanced">Advanced</div>
       <div class="tab active" data-tab="top3">Top 3</div>
       <div class="tab" data-tab="blind">Best blind</div>
       <div class="tab" data-tab="punish">Best punish</div>
@@ -70,15 +74,22 @@ button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radi
     <h2>Build / runes atuais</h2>
     <div class="content" id="build"></div>
     <div class="section"><div class="small">Recommendation now</div><div id="rec" class="recbox">Aguardando análise.</div></div>
+    <div class="section"><div class="small">Win condition inimiga</div><div id="enemyWin" class="box">Aguardando análise.</div></div>
+    <div class="section"><div class="small">Como vencer essa comp</div><div id="counterPlan" class="box">Aguardando análise.</div></div>
+    <div class="section"><div class="small">Game plan dinâmico</div><div id="gamePlan" class="box">Aguardando análise.</div></div>
   </div>
 </div>
 <script>
 const byId = id => document.getElementById(id);
 let payload = null;
 let selected = null;
+const PROFILE_KEY = 'nexus_oracle_profile_v2';
+function loadProfile(){ try { return JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}'); } catch { return {}; } }
+function saveProfile(p){ localStorage.setItem(PROFILE_KEY, JSON.stringify(p)); }
+function bumpComfort(champ){ if(!champ) return; const p = loadProfile(); p[champ] = (p[champ] || 0) + 1; saveProfile(p); }
 function comfortMap(){
   const raw = byId('comfort').value.trim();
-  const out = {};
+  const out = { ...loadProfile() };
   raw.split(/[,;]+/).map(s=>s.trim()).filter(Boolean).forEach(pair=>{
     const [k,v] = pair.split(':');
     if (k && v) out[k.trim()] = Number(v) || 0;
@@ -88,17 +99,19 @@ function comfortMap(){
 async function connect(){
   const r = await fetch('/status');
   const d = await r.json();
-  byId('status').textContent = d.ok ? `Online · ${d.mode}` : 'Offline';
+  byId('status').textContent = d.status==='ok' ? `Online · ${d.mode} · patch ${d.patch}` : 'Offline';
 }
 function activeTab(){ return document.querySelector('.tab.active')?.dataset.tab || 'top3'; }
 function currentList(){
   if (!payload) return [];
   const t = activeTab();
-  return t === 'top3' ? payload.picks : (payload.categories[t] || []);
+  if (t === 'quick' || t === 'advanced' || t === 'top3') return payload.picks;
+  return (payload.categories[t] || []);
 }
 function selectPickByKey(key){
   selected = key;
-  render();
+  bumpComfort(key);
+  analyze();
 }
 function currentPick(){
   const all = [...(payload?.picks||[]), ...(payload?.categories?.blind||[]), ...(payload?.categories?.punish||[]), ...(payload?.categories?.comfort||[]), ...(payload?.categories?.compFit||[])];
@@ -112,6 +125,7 @@ function renderCards(){
     <div class="score">${p.score}</div>
     <div class="small">Confidence ${p.confidence}% · WR ${p.avgWR}%</div>
     <div class="badges">${(p.labels||[]).map(l=>`<span class="badge">${l}</span>`).join('')}</div>
+    ${activeTab()==='quick' ? `<div class=\"small\">${(p.reasons||[])[0] || ''}</div>` : ''}
   </div>`).join('');
 }
 function renderPickMeta(){
@@ -130,7 +144,21 @@ function renderPickMeta(){
     <div class="row"><span>Comfort</span><b>${b.comfort ?? '-'}</b></div>
     <div class="row"><span>Meta confidence</span><b>${b.meta ?? '-'}</b></div>
     <div class="row"><span>Risk</span><b>${b.risk ?? '-'}</b></div>`;
+  renderSummary();
 }
+
+function renderSummary(){
+  const s = payload?.summary || {};
+  let extra = '';
+  if (s.enemyWinCondition) {
+    extra += `<div class="box" style="margin-top:12px"><div class="small">Win condition inimiga</div><div><b>${s.enemyWinCondition.label}</b></div><div class="small">${s.enemyWinCondition.explanation}</div></div>`;
+  }
+  if (s.counterPlan) {
+    extra += `<div class="box" style="margin-top:12px"><div class="small">Como vencer isso</div><div><b>${s.counterPlan.title}</b></div><div class="list">${(s.counterPlan.bullets||[]).map(x=>`<div>• ${x}</div>`).join('')}</div></div>`;
+  }
+  byId('rec').insertAdjacentHTML('afterend', `<div id="summaryWrap">${extra}</div>`);
+}
+
 function renderBuild(){
   const b = payload?.selectedBuild;
   if (!b) { byId('build').innerHTML = '<div class="muted">Sem build disponível.</div>'; return; }
@@ -155,11 +183,42 @@ function renderRec(){
   const r = payload?.recommendation;
   byId('rec').innerHTML = r ? `<div><b>${r.action}</b></div><div class="small">${r.urgency}</div><div>${r.details}</div>` : 'Aguardando análise.';
 }
-function render(){ renderCards(); renderPickMeta(); renderBuild(); renderRec(); }
+
+function renderEnemySummary(){
+  const s = payload?.summary || {};
+  const ew = s.enemyWinCondition || payload?.recommendations?.enemyWinCondition;
+  const cs = s.counterStrategy || payload?.recommendations?.counterStrategy;
+  const gp = s.gamePlan || payload?.recommendations?.gamePlan;
+  const ps = s.playstyle || payload?.recommendations?.playstyle;
+
+  byId('enemyWin').innerHTML = ew
+    ? `<div><b>${ew.label}</b></div><div class="small">${ew.explanation}</div>`
+    : 'Sem leitura de comp ainda.';
+
+  byId('counterPlan').innerHTML = cs
+    ? `<div><b>${cs.title}</b></div>
+       <div class="small" style="margin-top:6px">Plano</div><div>${cs.pickPlan}</div>
+       <div class="small" style="margin-top:8px">Macro</div><div>${cs.macro}</div>
+       <div class="small" style="margin-top:8px">Evite</div><div>${cs.avoid}</div>`
+    : 'Sem counter-strategy disponível.';
+
+  byId('gamePlan').innerHTML = gp
+    ? `<div class="badge">${ps || 'control'}</div>
+       <div class="small" style="margin-top:8px">Early</div><div>${gp.early}</div>
+       <div class="small" style="margin-top:8px">Mid</div><div>${gp.mid}</div>
+       <div class="small" style="margin-top:8px">Late</div><div>${gp.late}</div>
+       <div class="small" style="margin-top:8px">Macro</div>
+       <div class="list">${(gp.macro||[]).map(x=>`<div>• ${x}</div>`).join('')}</div>`
+    : 'Sem game plan dinâmico ainda.';
+}
+
+function render(){ const sw = document.getElementById('summaryWrap'); if (sw) sw.remove(); renderCards(); renderPickMeta(); renderBuild(); renderRec(); }
 async function analyze(){
   const body = {
     role: byId('role').value,
     queueMode: byId('queueMode').value,
+    side: byId('side').value,
+    pickOrder: Number(byId('pickOrder').value),
     allies: byId('allies').value,
     enemies: byId('enemies').value,
     bans: byId('bans').value,
@@ -174,6 +233,8 @@ async function analyze(){
 window.selectPickByKey = selectPickByKey;
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); render(); });
 byId('runBtn').onclick = analyze;
+const savedProfile = loadProfile();
+if (Object.keys(savedProfile).length && !byId('comfort').value) { byId('comfort').value = Object.entries(savedProfile).slice(0,8).map(([k,v])=>`${k}:${v}`).join(', '); }
 connect();
 </script>
 </body>
