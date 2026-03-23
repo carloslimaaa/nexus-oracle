@@ -251,8 +251,9 @@ async function resolveBuildAndRunes(champName, role) {
     const alias = ITEM_ALIAS[norm(it)] ? itemsDD.byName[norm(ITEM_ALIAS[norm(it)])] : null;
     return direct || alias || null;
   }).filter(Boolean);
-  items = uniq(items.map(i => i.id)).map(id => itemsDD.byId[id]).slice(0, 6);
+  items = uniq(items.map(i => i.id)).map(id => itemsDD.byId[id]);
 
+  const targetItemCount = champ.cls === "adc" ? 7 : 6;
   const fallbackByClass = {
     adc: ["Berserker's Greaves","Infinity Edge","Rapid Firecannon","Lord Dominik's Regards","Guardian Angel"],
     mago: ["Sorcerer's Shoes","Shadowflame","Zhonya's Hourglass","Void Staff","Rabadon's Deathcap"],
@@ -263,11 +264,9 @@ async function resolveBuildAndRunes(champName, role) {
     enchanter: ["Ionian Boots of Lucidity","Redemption","Mikael's Blessing","Ardent Censer","Staff of Flowing Water"],
     sup_engage: ["Mercury's Treads","Locket of the Iron Solari","Knight's Vow","Zeke's Convergence","Redemption"],
   };
-  if (items.length < 4) {
-    const extra = (fallbackByClass[champ.cls] || []).map(n => itemsDD.byName[norm(n)]).filter(Boolean);
-    for (const e of extra) if (!items.find(i => i.id === e.id)) items.push(e);
-    items = items.slice(0, 6);
-  }
+  const extra = (fallbackByClass[champ.cls] || []).map(n => itemsDD.byName[norm(n)]).filter(Boolean);
+  for (const e of extra) if (!items.find(i => i.id === e.id)) items.push(e);
+  items = items.slice(0, targetItemCount);
 
   const resolveRune = r => runesDD.byName[norm(r)] || runesDD.byName[norm(RUNE_ALIAS[norm(r)] || r)] || null;
   const key = resolveRune(champ.runes?.key);
@@ -287,6 +286,7 @@ async function resolveBuildAndRunes(champName, role) {
     spells,
     runes: { key, primaryTree: p, primary, secondaryTree: s, secondary, shards },
     items,
+    itemTarget: targetItemCount,
     notes: champ.d || [],
   };
 }
@@ -431,6 +431,7 @@ function summarizeLiveClient(lc) {
 }
 function buildRecommendation({ minute, context, live }) {
   const champ = context.champion || live?.myChampion || "";
+  const roleKey = norm(context.role || getChamp(champ)?.role || "");
   const enemyText = context.enemies || (live?.enemies || []).join(", ");
   const alliesText = context.allies || (live?.allies || []).join(", ");
   const obs = [];
@@ -438,58 +439,87 @@ function buildRecommendation({ minute, context, live }) {
   let urgencia = "baixa";
   let detalhes = `Minute ${minute}: stabilize lane and prepare next wave/objective.`;
 
-  const isJg = norm(context.role) === "jungle" || (champ && getChamp(champ)?.role === "jungle");
+  const isJg = roleKey === "jungle";
+  const isSupport = roleKey === "support" || roleKey === "sup";
+  const hasDragonWindow = minute >= 5 && minute < 28;
+  const hasBaronWindow = minute >= 20;
+
   if (minute < 3) {
-    acao = isJg ? "Full clear toward prio" : "Play lane with discipline";
-    detalhes = `Minute ${minute}: use waves and vision before fighting.`;
-    obs.push("Respect early jungle pathing.");
+    acao = isJg ? "Full clear toward prio" : isSupport ? "Trade around push timing" : "Lane with discipline";
+    detalhes = `Minute ${minute}: respect level spikes, keep wave under control and avoid low-value fights.`;
+    obs.push("Use vision before contesting river.");
   } else if (minute < 8) {
-    acao = isJg ? "Contest river and reset" : "Crash wave then move";
+    acao = isJg ? "Contest river on reset" : "Crash wave then move";
     urgencia = "media";
-    detalhes = `Early game: tempo around river and first neutral setup.`;
-    obs.push("Track jungle position before extending.");
+    detalhes = `Early tempo window: secure prio and be first on river/skirmish.`;
+    obs.push("Track jungle pathing before extending.");
   } else if (minute < 14) {
-    acao = "Set vision for dragon";
+    acao = hasDragonWindow ? "Set vision for dragon" : "Play for lane reset";
     urgencia = "media";
-    detalhes = `Mid-early game: secure prio and move first to dragon side.`;
-    obs.push("Push one more wave before grouping.");
+    detalhes = `Mid-early game: move first to neutral setup instead of greeting for one extra wave.`;
+    obs.push("Push one more wave only if your lane state is safe.");
   } else if (minute < 20) {
     acao = "Group for objective control";
     urgencia = "alta";
-    detalhes = `Second/third objective window: don't trade side waves for free setup.`;
-    obs.push("Reset earlier if you have gold.");
+    detalhes = `Second/third objective window: spend gold early and arrive first with vision.`;
+    obs.push("Do not trade side farm for free setup.");
   } else {
-    acao = "Control Baron vision";
+    acao = hasBaronWindow ? "Control Baron vision" : "Play with team tempo";
     urgencia = "alta";
-    detalhes = `Late game: vision denial and tempo matter more than side farm.`;
+    detalhes = `Late game: vision denial, side-wave timing and reset windows matter more than raw CS.`;
     obs.push("Never face-check alone.");
   }
 
   if (live) {
     const k = live.myScores?.kills || 0, d = live.myScores?.deaths || 0, a = live.myScores?.assists || 0;
-    obs.unshift(`KDA ${k}/${d}/${a}. Gold ${Math.round(live.myGold || 0)}.`);
+    const cs = live.myScores?.creepScore || 0;
+    obs.unshift(`KDA ${k}/${d}/${a} · CS ${cs} · Gold ${Math.round(live.myGold || 0)}.`);
+
     if ((live.myGold || 0) >= 1300) {
       acao = "Reset and spend gold";
-      urgencia = "media";
-      detalhes = `You are holding ${Math.round(live.myGold)} gold. Your next buy is worth more than one extra wave.`;
+      urgencia = urgencia === "alta" ? "alta" : "media";
+      detalhes = `You are holding ${Math.round(live.myGold)} gold. Your next buy is stronger than one extra wave.`;
     }
-    const lastEvent = live.events?.[live.events.length - 1];
-    if (lastEvent?.EventName === "ChampionKill") {
+
+    const recent = (live.events || []).slice(-3);
+    const championKill = recent.find(e => e.EventName === "ChampionKill");
+    const dragon = recent.find(e => /DragonKill/i.test(e.EventName || ""));
+    const baron = recent.find(e => /BaronKill/i.test(e.EventName || ""));
+
+    if (championKill) {
+      acao = "Push and rotate first";
       urgencia = "alta";
-      obs.unshift("Recent kill happened: expect rotation or cross-map response.");
+      detalhes = "A recent kill changed map priority. Push nearest wave and rotate before the enemy resets.";
+      obs.unshift("Recent kill happened: expect cross-map response or objective start.");
+    }
+    if (dragon) {
+      acao = "Trade top side or reset";
+      urgencia = "alta";
+      detalhes = "Dragon was just taken. Immediately decide between cross-map trade, tempo reset or catching next wave.";
+      obs.unshift("Dragon event detected on the map.");
+    }
+    if (baron) {
+      acao = "Defend vision and side waves";
+      urgencia = "alta";
+      detalhes = "Baron was just taken. Avoid blind fights and set wave clear before contesting space.";
+      obs.unshift("Baron event detected on the map.");
     }
     if (live.enemyThreat?.kills >= 5) {
-      obs.unshift(`${live.enemyThreat.champ} is fed (${live.enemyThreat.kills}/${live.enemyThreat.deaths}). Respect fog and itemize defensively.`);
+      obs.unshift(`${live.enemyThreat.champ} is fed (${live.enemyThreat.kills}/${live.enemyThreat.deaths}). Respect fog, track flanks and itemize defensively.`);
+      if (urgencia !== "alta") urgencia = "media";
     }
+    if (isJg && hasDragonWindow) obs.push("As jungler, sync your camp reset with objective spawn timers.");
+    if (!isJg && minute >= 8 && minute <= 22) obs.push("Ping your reset 20-30 seconds before objective spawn.");
   } else {
-    obs.push("Live Client not detected — using capture context and game timer.");
+    obs.push("Live Client not detected — using capture context and timer only.");
   }
 
-  if (/malphite|amumu|wukong|nautilus|leona/.test(enemyText.toLowerCase())) obs.push("Enemy engage is strong — keep flash/spacing for first engage.");
+  if (/malphite|amumu|wukong|nautilus|leona/.test(enemyText.toLowerCase())) obs.push("Enemy engage is strong — keep flash/spacing for the first engage.");
   if (/soraka|yuumi|sona|swain|aatrox/.test(enemyText.toLowerCase())) obs.push("Anti-heal becomes valuable this game.");
-  if (/jinx|caitlyn|jhin|kaisa|xayah/.test(alliesText.toLowerCase())) obs.push("Play around your carry's spike and don't force before setup.");
+  if (/jinx|caitlyn|jhin|kaisa|xayah/.test(alliesText.toLowerCase())) obs.push("Play around your carry spike and avoid forcing before setup.");
+  if (/splitpush|camille|fiora|jax|tryndamere|yorick/.test(enemyText.toLowerCase())) obs.push("Match side waves earlier — do not give free towers to split push.");
 
-  return { acao, urgencia, detalhes, observacoes: obs.slice(0,5) };
+  return { acao, urgencia, detalhes, observacoes: uniq(obs).slice(0,6) };
 }
 
 // ----------------------- groq -----------------------
