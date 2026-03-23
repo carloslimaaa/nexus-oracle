@@ -6,303 +6,443 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { D, findChamp, ALIASES, CHAMP_COUNT } from "./dataset.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
 app.use(express.json({ limit: "12mb" }));
 app.use(cors());
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const GROQ_KEY = process.env.GROQ_KEY || "";
 const RIOT_KEY = process.env.RIOT_KEY || "";
-const liveClientAgent = new https.Agent({ rejectUnauthorized: false });
+const LIVE_AGENT = new https.Agent({ rejectUnauthorized: false });
 
-// ----------------------- cache -----------------------
-const MEM = new Map();
-const now = () => Date.now();
-function cget(k) { const e = MEM.get(k); return e && now() - e.t < e.ttl ? e.v : null; }
-function cset(k, v, ttl) { MEM.set(k, { v, t: now(), ttl }); return v; }
+const CACHE = new Map();
+const TTL = {
+  patch: 6 * 3600_000,
+  ddragon: 6 * 3600_000,
+  riotBuild: 20 * 60_000,
+  live: 1500,
+};
+const cGet = (k) => {
+  const e = CACHE.get(k);
+  return e && Date.now() - e.ts < e.ttl ? e.v : null;
+};
+const cSet = (k, v, ttl) => (CACHE.set(k, { v, ts: Date.now(), ttl }), v);
 
-// ----------------------- helpers -----------------------
-function norm(s = "") {
-  return String(s).toLowerCase().trim().replace(/[’'\s\-.]+/g, "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const parseList = (str) => (!str || str === "não informado" ? [] : str.split(/[,;/|]+/).map(s => s.trim()).filter(Boolean));
+function normalizeKey(name) {
+  if (!name) return "";
+  const clean = name.toLowerCase().trim().replace(/[’'\s\-\.]+/g, "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return ALIASES[name.toLowerCase().trim()] || ALIASES[clean] || clean;
 }
-function titleCaseKey(k = "") {
-  return k ? k.charAt(0).toUpperCase() + k.slice(1) : "";
-}
-function parseList(str) {
-  if (!str || str === "não informado") return [];
-  return String(str).split(/[,;/|]+/).map(s => s.trim()).filter(Boolean);
-}
-function uniq(arr) { return [...new Set(arr.filter(Boolean))]; }
 function getChamp(name) {
-  const key = ALIASES[String(name || "").toLowerCase().trim()] || ALIASES[norm(name)] || norm(name);
-  return D[key] || findChamp(name) || null;
+  if (!name) return null;
+  return D[normalizeKey(name)] || findChamp(name);
 }
-function getChampKey(name) {
-  const c = getChamp(name);
-  if (!c) return "";
-  return Object.keys(D).find(k => D[k] === c) || norm(name);
-}
-function safeInt(v, d = 0) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
-function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+const ROLE_MAP = { top: "top", jungle: "jungle", mid: "mid", adc: "adc", bot: "adc", support: "support", sup: "support", suporte: "support" };
+const LIVE_ROLE_MAP = { TOP: "top", JUNGLE: "jungle", MIDDLE: "mid", BOTTOM: "adc", UTILITY: "support" };
 
-// ----------------------- ddragon -----------------------
+const ITEM_ALIASES = {
+  "anel de doran": "Doran's Ring",
+  "doran ring": "Doran's Ring",
+  "poção": "Health Potion",
+  "pocao": "Health Potion",
+  "anel de doran + poção": "Doran's Ring + Health Potion",
+  "espada longa + poção": "Long Sword + Health Potion",
+  "machado longo + poção": "Long Sword + Health Potion",
+  "doran shield + poção": "Doran's Shield + Health Potion",
+  "doran blade + poção": "Doran's Blade + Health Potion",
+  "botas de berserker": "Berserker's Greaves",
+  "sandalias do feiticeiro": "Sorcerer's Shoes",
+  "sandálias do feiticeiro": "Sorcerer's Shoes",
+  "ampulheta de zhonya": "Zhonya's Hourglass",
+  "chama das sombras": "Shadowflame",
+  "chapéu mortal de rabadon": "Rabadon's Deathcap",
+  "bastão do vazio": "Void Staff",
+  "veu da banshee": "Banshee's Veil",
+  "véu da banshee": "Banshee's Veil",
+  "força da trindade": "Trinity Force",
+  "dança da morte": "Death's Dance",
+  "pele de pedra de gárgula": "Gargoyle Stoneplate",
+  "armadura de espinhos": "Thornmail",
+  "coração congelado": "Frozen Heart",
+  "força da natureza": "Force of Nature",
+  "kraken slayer": "Kraken Slayer",
+  "fio do infinito": "Infinity Edge",
+  "lembrete mortal": "Mortal Reminder",
+  "espada do rei destruído": "Blade of the Ruined King",
+  "espada do rei destruido": "Blade of the Ruined King",
+  "machado negro": "Black Cleaver",
+  "sterak's gage": "Sterak's Gage",
+  "faca chempunk serrilhada": "Chempunk Chainsword",
+  "faca chempunk": "Chempunk Chainsword",
+  "cimitarra mercurial": "Mercurial Scimitar",
+  "bastão das eras": "Rod of Ages",
+  "criador de fendas": "Riftmaker",
+  "tormento de liandry": "Liandry's Torment",
+  "dente de nashor": "Nashor's Tooth",
+  "rylai's crystal scepter": "Rylai's Crystal Scepter",
+  "foguetão hextech": "Hextech Rocketbelt",
+  "foguetao hextech": "Hextech Rocketbelt",
+  "lich bane": "Lich Bane",
+  "rapidfire cannon": "Rapid Firecannon",
+  "rapid fire cannon": "Rapid Firecannon",
+  "lord dominik's regards": "Lord Dominik's Regards",
+  "guardião mortal": "Guardian Angel",
+  "guardiao mortal": "Guardian Angel",
+  "botas de mercúrio": "Mercury's Treads",
+  "botas de mercurio": "Mercury's Treads",
+  "plated steelcaps": "Plated Steelcaps",
+  "botas de aço": "Plated Steelcaps",
+};
+
+const RUNE_ALIASES = {
+  "domination": "Domination",
+  "sorcery": "Sorcery",
+  "precision": "Precision",
+  "resolve": "Resolve",
+  "inspiration": "Inspiration",
+  "dark harvest": "Dark Harvest",
+  "electrocute": "Electrocute",
+  "conqueror": "Conqueror",
+  "fleet footwork": "Fleet Footwork",
+  "grasp of the undying": "Grasp of the Undying",
+  "taste of blood": "Taste of Blood",
+  "sudden impact": "Sudden Impact",
+  "eyeball collection": "Eyeball Collection",
+  "treasure hunter": "Treasure Hunter",
+  "ultimate hunter": "Ultimate Hunter",
+  "nimbus cloak": "Nimbus Cloak",
+  "transcendence": "Transcendence",
+  "gathering storm": "Gathering Storm",
+  "scorch": "Scorch",
+  "manaflow band": "Manaflow Band",
+  "triumph": "Triumph",
+  "legend: haste": "Legend: Haste",
+  "legend: alacrity": "Legend: Alacrity",
+  "legend: tenacity": "Legend: Tenacity",
+  "coup de grace": "Coup de Grace",
+  "cut down": "Cut Down",
+  "last stand": "Last Stand",
+  "conditioning": "Conditioning",
+  "unflinching": "Unflinching",
+  "bone plating": "Bone Plating",
+  "second wind": "Second Wind",
+  "overgrowth": "Overgrowth",
+  "demolish": "Demolish",
+  "cash back": "Cash Back",
+  "cosmic insight": "Cosmic Insight",
+  "biscuit delivery": "Biscuit Delivery",
+  "jack of all trades": "Jack of All Trades",
+  "adaptive force": "Adaptive Force",
+  "armor": "Armor",
+  "health scaling": "Health Scaling",
+  "attack speed": "Attack Speed",
+  "ability haste": "Ability Haste",
+};
+
 async function getPatch() {
-  const k = "dd:patch";
-  const cached = cget(k);
+  const cached = cGet("patch");
   if (cached) return cached;
   try {
-    const r = await axios.get("https://ddragon.leagueoflegends.com/api/versions.json", { timeout: 5000 });
-    return cset(k, r.data[0], 6 * 3600_000);
+    const r = await axios.get("https://ddragon.leagueoflegends.com/api/versions.json", { timeout: 7000 });
+    return cSet("patch", r.data[0], TTL.patch);
   } catch {
-    return cget(k) || "16.6.1";
+    return cSet("patch", "16.6.1", TTL.patch);
   }
 }
 
-async function getChampionsDD() {
-  const k = "dd:champs";
-  const cached = cget(k);
+async function getDDragon() {
+  const cached = cGet("ddragon");
   if (cached) return cached;
   const patch = await getPatch();
-  const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/champion.json`, { timeout: 8000 });
-  const out = {};
-  for (const [key, val] of Object.entries(r.data.data || {})) {
-    out[norm(key)] = {
-      key,
-      id: val.id,
-      name: val.name,
-      image: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/champion/${val.image.full}`,
-      square: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/champion/${val.image.full}`,
-    };
-    out[norm(val.name)] = out[norm(key)];
-  }
-  return cset(k, out, 12 * 3600_000);
-}
+  const [champRes, itemRes, spellRes, runeRes] = await Promise.all([
+    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/champion.json`, { timeout: 10000 }),
+    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/item.json`, { timeout: 10000 }),
+    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/summoner.json`, { timeout: 10000 }),
+    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/runesReforged.json`, { timeout: 10000 }),
+  ]);
 
-async function getItemsDD() {
-  const k = "dd:items";
-  const cached = cget(k);
-  if (cached) return cached;
-  const patch = await getPatch();
-  const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/item.json`, { timeout: 8000 });
-  const byId = {};
-  const byName = {};
-  for (const [id, item] of Object.entries(r.data.data || {})) {
-    const entry = { id, name: item.name, image: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/item/${id}.png`, stats: item.stats || {} };
-    byId[id] = entry;
-    byName[norm(item.name)] = entry;
+  const champions = champRes.data.data || {};
+  const championKeyMap = {};
+  const championIdMap = {};
+  for (const [key, val] of Object.entries(champions)) {
+    championKeyMap[normalizeKey(key)] = key;
+    championKeyMap[normalizeKey(val.name)] = key;
+    championIdMap[String(val.key)] = key;
   }
-  return cset(k, { byId, byName }, 12 * 3600_000);
-}
 
-async function getRunesDD() {
-  const k = "dd:runes";
-  const cached = cget(k);
-  if (cached) return cached;
-  const patch = await getPatch();
-  const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/runesReforged.json`, { timeout: 8000 });
-  const byName = {};
-  const trees = {};
-  for (const tree of r.data || []) {
-    trees[norm(tree.name)] = { name: tree.name, icon: `https://ddragon.leagueoflegends.com/cdn/img/${tree.icon}` };
-    byName[norm(tree.name)] = { name: tree.name, icon: `https://ddragon.leagueoflegends.com/cdn/img/${tree.icon}`, tree: tree.name };
+  const items = itemRes.data.data || {};
+  const itemByName = {};
+  for (const [id, it] of Object.entries(items)) {
+    itemByName[normalizeKey(it.name)] = { id, name: it.name, icon: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/item/${id}.png` };
+  }
+
+  const spells = spellRes.data.data || {};
+  const spellById = {};
+  const spellByName = {};
+  for (const [key, sp] of Object.entries(spells)) {
+    spellById[String(sp.key)] = { name: sp.name, icon: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/spell/${sp.image.full}` };
+    spellByName[normalizeKey(sp.name)] = spellById[String(sp.key)];
+  }
+
+  const runeByName = {};
+  const runeTreeByName = {};
+  const runeById = {};
+  for (const tree of runeRes.data || []) {
+    const treeObj = { id: String(tree.id), name: tree.name, icon: `https://ddragon.leagueoflegends.com/cdn/img/${tree.icon}` };
+    runeTreeByName[normalizeKey(tree.name)] = treeObj;
+    runeById[String(tree.id)] = treeObj;
     for (const slot of tree.slots || []) {
       for (const rune of slot.runes || []) {
-        byName[norm(rune.name)] = { name: rune.name, icon: `https://ddragon.leagueoflegends.com/cdn/img/${rune.icon}`, tree: tree.name };
+        const obj = { id: String(rune.id), name: rune.name, icon: `https://ddragon.leagueoflegends.com/cdn/img/${rune.icon}` };
+        runeByName[normalizeKey(rune.name)] = obj;
+        runeById[String(rune.id)] = obj;
       }
     }
   }
-  return cset(k, { byName, trees }, 12 * 3600_000);
+
+  return cSet("ddragon", { patch, championKeyMap, championIdMap, itemByName, items, spellById, spellByName, runeByName, runeTreeByName, runeById }, TTL.ddragon);
 }
 
-async function getSummonerSpellsDD() {
-  const k = "dd:spells";
-  const cached = cget(k);
-  if (cached) return cached;
-  const patch = await getPatch();
-  const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/summoner.json`, { timeout: 8000 });
-  const byNorm = {};
-  for (const [key, val] of Object.entries(r.data.data || {})) {
-    const entry = { name: val.name, image: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/spell/${val.image.full}` };
-    byNorm[norm(val.name)] = entry;
-    byNorm[norm(key)] = entry;
+function currentChampionIcon(ddKey, patch) {
+  return ddKey ? `https://ddragon.leagueoflegends.com/cdn/${patch}/img/champion/${ddKey}.png` : "";
+}
+
+async function resolveItem(raw) {
+  const dd = await getDDragon();
+  if (!raw) return null;
+  if (typeof raw === "number" || /^\d+$/.test(String(raw))) {
+    const id = String(raw);
+    const it = dd.items[id];
+    if (!it) return null;
+    return { id, name: it.name, icon: `https://ddragon.leagueoflegends.com/cdn/${dd.patch}/img/item/${id}.png` };
   }
-  return cset(k, byNorm, 12 * 3600_000);
+  const alias = ITEM_ALIASES[normalizeKey(raw)] || raw;
+  return dd.itemByName[normalizeKey(alias)] || null;
 }
 
-// ----------------------- translations / aliases -----------------------
-const ITEM_ALIAS = {
-  [norm("Força da Trindade")]: "Trinity Force",
-  [norm("Botas de Treino")]: "Plated Steelcaps",
-  [norm("Dança da Morte")]: "Death's Dance",
-  [norm("Pele de Pedra de Gárgula")]: "Gargoyle Stoneplate",
-  [norm("Guardião Imortal")]: "Guardian Angel",
-  [norm("Machado Negro")]: "Black Cleaver",
-  [norm("Cimitarra Mercurial")]: "Mercurial Scimitar",
-  [norm("Manopla de Gelo")]: "Iceborn Gauntlet",
-  [norm("Coração Congelado")]: "Frozen Heart",
-  [norm("Força da Natureza")]: "Force of Nature",
-  [norm("Armadura de Warmog")]: "Warmog's Armor",
-  [norm("Quebra-Passos")]: "Stridebreaker",
-  [norm("Aço do Coração")]: "Heartsteel",
-  [norm("Armadura de Espinhos")]: "Thornmail",
-  [norm("Véu do Espírito")]: "Spirit Visage",
-  [norm("Ravenosa Hidra")]: "Ravenous Hydra",
-  [norm("Fio do Infinito")]: "Infinity Edge",
-  [norm("Protetor do Guardião")]: "Guardian Angel",
-  [norm("Essência Caçadora")]: "Essence Reaver",
-  [norm("Botas de Iônia")]: "Ionian Boots of Lucidity",
-  [norm("Rancor de Serylda")]: "Serylda's Grudge",
-  [norm("Dente de Nashor")]: "Nashor's Tooth",
-  [norm("Botas de Berserker")]: "Berserker's Greaves",
-  [norm("Lâmina da Raiva de Guinsoo")]: "Guinsoo's Rageblade",
-  [norm("Lâmina Raivosa")]: "Guinsoo's Rageblade",
-  [norm("Sandálias do Feiticeiro")]: "Sorcerer's Shoes",
-  [norm("Foguetão Hextech")]: "Hextech Rocketbelt",
-  [norm("Ampulheta de Zhonya")]: "Zhonya's Hourglass",
-  [norm("Bastão do Vazio")]: "Void Staff",
-  [norm("Criador de Fendas")]: "Riftmaker",
-  [norm("Abraço Demoníaco")]: "Demonic Embrace",
-  [norm("Bastão das Eras")]: "Rod of Ages",
-  [norm("Botas de Mobilidade")]: "Boots of Mobility",
-  [norm("Rylai's Crystal Scepter")]: "Rylai's Crystal Scepter",
-  [norm("Máscara Abissal")]: "Abyssal Mask",
-  [norm("Sunfire Aegis")]: "Sunfire Aegis",
-  [norm("Jak'Sho o Proteano")]: "Jak'Sho, The Protean",
-  [norm("Espada do Rei Destruído")]: "Blade of the Ruined King",
-  [norm("Lembrete Mortal")]: "Mortal Reminder",
-  [norm("Guardião Mortal")]: "Guardian Angel",
-  [norm("Morellonomicon")]: "Morellonomicon",
-  [norm("Executioner's Calling")]: "Executioner's Calling",
-  [norm("Kraken Slayer")]: "Kraken Slayer",
-  [norm("Rapidfire Cannon")]: "Rapid Firecannon",
-  [norm("Furacão de Runaan")]: "Runaan's Hurricane",
-  [norm("Shieldbow Imortal")]: "Immortal Shieldbow",
-  [norm("Lâmina da Hextech")]: "Hextech Gunblade",
-  [norm("Chapéu Mortal de Rabadon")]: "Rabadon's Deathcap",
-  [norm("Chama das Sombras")]: "Shadowflame",
-  [norm("Luden's Companheiro")]: "Luden's Companion",
-  [norm("Véu da Banshee")]: "Banshee's Veil",
-  [norm("Coletor")]: "The Collector",
-  [norm("Lord Dominik's Regards")]: "Lord Dominik's Regards",
-  [norm("Plated Steelcaps")]: "Plated Steelcaps",
-  [norm("Mercury's Treads")]: "Mercury's Treads",
-  [norm("Sorcerer's Shoes")]: "Sorcerer's Shoes",
-  [norm("Berserker's Greaves")]: "Berserker's Greaves",
-  [norm("Void Staff")]: "Void Staff",
-  [norm("Lich Bane")]: "Lich Bane",
-};
+async function resolveRune(raw, isTree = false) {
+  const dd = await getDDragon();
+  if (!raw) return null;
+  if (typeof raw === "number" || /^\d+$/.test(String(raw))) {
+    return dd.runeById[String(raw)] || null;
+  }
+  const alias = RUNE_ALIASES[normalizeKey(raw)] || raw;
+  const norm = normalizeKey(alias);
+  return isTree ? (dd.runeTreeByName[norm] || dd.runeById[String(raw)] || null) : (dd.runeByName[norm] || dd.runeById[String(raw)] || null);
+}
 
-const RUNE_ALIAS = {
-  [norm("Conquistador")]: "Conqueror",
-  [norm("Precisão")]: "Precision",
-  [norm("Triunfo")]: "Triumph",
-  [norm("Lenda: Alacrity")]: "Legend: Alacrity",
-  [norm("Golpe de Misericórdia")]: "Coup de Grace",
-  [norm("Determinação")]: "Resolve",
-  [norm("Demolir")]: "Demolish",
-  [norm("Inabalável")]: "Unflinching",
-  [norm("Condicionamento")]: "Conditioning",
-  [norm("Dominação")]: "Domination",
-  [norm("Sabor do Sangue")]: "Taste of Blood",
-  [norm("Caçador Ganancioso")]: "Treasure Hunter",
-  [norm("Caçador Supremo")]: "Ultimate Hunter",
-  [norm("Coleta de Globos Oculares")]: "Eyeball Collection",
-  [norm("Feitiçaria")]: "Sorcery",
-  [norm("Manto de Nuvem")]: "Nimbus Cloak",
-  [norm("Transcendência")]: "Transcendence",
-  [norm("Calçados Mágicos")]: "Magical Footwear",
-  [norm("Perspicácia Cósmica")]: "Cosmic Insight",
-  [norm("Inspiração")]: "Inspiration",
-  [norm("Eletrocutar")]: "Electrocute",
-  [norm("Ritmo Letal")]: "Lethal Tempo",
-  [norm("Pressione o Ataque")]: "Press the Attack",
-  [norm("Aperto dos Mortos-Vivos")]: "Grasp of the Undying",
-  [norm("Fase Rush")]: "Phase Rush",
-  [norm("Colheita Sombria")]: "Dark Harvest",
-  [norm("Primeiro Golpe")]: "First Strike",
-  [norm("Presença de Espírito")]: "Presence of Mind",
-  [norm("Lenda: Persistência")]: "Legend: Haste",
-  [norm("Última Resistência")]: "Last Stand",
-  [norm("Crescimento Excessivo")]: "Overgrowth",
-  [norm("Coleta de Tempestades")]: "Gathering Storm",
-};
-const SHARD_ALIAS = {
-  [norm("Adaptativo")]: "Adaptive Force",
-  [norm("Armadura")]: "Armor",
-  [norm("Resistência Mágica")]: "Magic Resist",
-  [norm("Velocidade de Ataque")]: "Attack Speed",
-  [norm("Velocidade de Habilidade")]: "Ability Haste",
-};
-
-async function resolveBuildAndRunes(champName, role) {
-  const champ = getChamp(champName);
-  if (!champ) return null;
-  const itemsDD = await getItemsDD();
-  const runesDD = await getRunesDD();
-  const spellsDD = await getSummonerSpellsDD();
-  const champsDD = await getChampionsDD();
-  const champDD = champsDD[norm(champName)] || champsDD[norm(getChampKey(champName))];
-
-  // best effort: current validated items
-  let items = (champ.build || []).map(it => {
-    const direct = itemsDD.byName[norm(it)];
-    const alias = ITEM_ALIAS[norm(it)] ? itemsDD.byName[norm(ITEM_ALIAS[norm(it)])] : null;
-    return direct || alias || null;
-  }).filter(Boolean);
-  items = uniq(items.map(i => i.id)).map(id => itemsDD.byId[id]);
-
-  const targetItemCount = champ.cls === "adc" ? 7 : 6;
-  const fallbackByClass = {
-    adc: ["Berserker's Greaves","Infinity Edge","Rapid Firecannon","Lord Dominik's Regards","Guardian Angel"],
-    mago: ["Sorcerer's Shoes","Shadowflame","Zhonya's Hourglass","Void Staff","Rabadon's Deathcap"],
-    assassino_ap: ["Sorcerer's Shoes","Lich Bane","Zhonya's Hourglass","Shadowflame","Void Staff"],
-    assassino_ad: ["Mercury's Treads","The Collector","Lord Dominik's Regards","Guardian Angel","Death's Dance"],
-    lutador: ["Plated Steelcaps","Black Cleaver","Death's Dance","Sterak's Gage","Guardian Angel"],
-    tank: ["Plated Steelcaps","Thornmail","Frozen Heart","Force of Nature","Gargoyle Stoneplate"],
-    enchanter: ["Ionian Boots of Lucidity","Redemption","Mikael's Blessing","Ardent Censer","Staff of Flowing Water"],
-    sup_engage: ["Mercury's Treads","Locket of the Iron Solari","Knight's Vow","Zeke's Convergence","Redemption"],
-  };
-  const extra = (fallbackByClass[champ.cls] || []).map(n => itemsDD.byName[norm(n)]).filter(Boolean);
-  for (const e of extra) if (!items.find(i => i.id === e.id)) items.push(e);
-  items = items.slice(0, targetItemCount);
-
-  const resolveRune = r => runesDD.byName[norm(r)] || runesDD.byName[norm(RUNE_ALIAS[norm(r)] || r)] || null;
-  const key = resolveRune(champ.runes?.key);
-  const p = resolveRune(champ.runes?.p);
-  const s = resolveRune(champ.runes?.s);
-  const primary = [champ.runes?.r1, champ.runes?.r2, champ.runes?.r3].map(resolveRune).filter(Boolean);
-  const secondary = [champ.runes?.s1, champ.runes?.s2].map(resolveRune).filter(Boolean);
-  const shards = (champ.runes?.sh || []).map(x => SHARD_ALIAS[norm(x)] || x);
-  const spells = (champ.f || []).map(sp => spellsDD[norm(sp)] || { name: sp, image: "" });
-
+async function normalizeRunePage(runes = {}) {
+  const primaryTree = await resolveRune(runes.p, true);
+  const secondaryTree = await resolveRune(runes.s, true);
+  const primary = (await Promise.all([runes.key, runes.r1, runes.r2, runes.r3].map(r => resolveRune(r)))).filter(Boolean);
+  const secondary = (await Promise.all([runes.s1, runes.s2].map(r => resolveRune(r)))).filter(Boolean);
+  const shardNames = (runes.sh || []).filter(Boolean).map(s => RUNE_ALIASES[normalizeKey(s)] || s);
+  while (shardNames.length < 3) shardNames.push(["Adaptive Force", "Adaptive Force", "Armor"][shardNames.length]);
   return {
-    champion: champName,
-    role: role || champ.role,
-    cls: champ.cls,
-    championImage: champDD?.image || "",
-    starter: champ.ini || "Doran's Ring + 2 Health Potions",
-    spells,
-    runes: { key, primaryTree: p, primary, secondaryTree: s, secondary, shards },
-    items,
-    itemTarget: targetItemCount,
-    notes: champ.d || [],
+    primaryTree,
+    secondaryTree,
+    primary,
+    secondary,
+    shards: shardNames.slice(0,3),
   };
 }
 
-// ----------------------- pick engine -----------------------
-const LANE_MAP = { top:"top", jungle:"jungle", mid:"mid", adc:"adc", bot:"adc", sup:"support", support:"support", suporte:"support" };
+function deriveSituationalNames(champData, enemies = "", currentNames = []) {
+  const cls = champData?.cls || "";
+  const e = enemies.toLowerCase();
+  const result = [];
+  const needPen = /malphite|ornn|sion|rammus|maokai|sejuani|zac|nautilus|leona/.test(e);
+  const needAntiHeal = /aatrox|soraka|yuumi|vladimir|swain|warwick|mundo|fiora|gwen/.test(e);
+  const needMR = /syndra|ahri|orianna|viktor|anivia|brand|hwei|lux|cassiopeia|zoe/.test(e);
+  const needArmor = /zed|talon|rengar|khazix|jhin|jinx|caitlyn|draven|yasuo|yone/.test(e);
+
+  if (cls === "adc") {
+    if (needPen) result.push("Lord Dominik's Regards");
+    if (needAntiHeal) result.push("Mortal Reminder");
+    if (needArmor) result.push("Guardian Angel");
+    if (needMR) result.push("Mercurial Scimitar");
+  } else if (["mago", "assassino_ap"].includes(cls)) {
+    if (needArmor) result.push("Zhonya's Hourglass");
+    if (needPen) result.push("Void Staff");
+    if (needAntiHeal) result.push("Morellonomicon");
+    if (needMR) result.push("Banshee's Veil");
+  } else if (["lutador", "assassino_ad"].includes(cls)) {
+    if (needAntiHeal) result.push("Chempunk Chainsword");
+    if (needPen) result.push("Serylda's Grudge");
+    if (needArmor) result.push("Guardian Angel");
+    if (needMR) result.push("Force of Nature");
+  } else if (cls === "tank") {
+    if (needAntiHeal) result.push("Thornmail");
+    if (needMR) result.push("Force of Nature");
+    if (needArmor) result.push("Frozen Heart");
+  }
+  return result.filter(n => n && !currentNames.includes(n));
+}
+
+async function ensureBuildItems(champData, rawBuild = [], enemies = "") {
+  const cls = champData?.cls || "";
+  const target = cls === "adc" ? 7 : 6;
+  const resolved = [];
+  for (const raw of rawBuild) {
+    const item = await resolveItem(raw);
+    if (item && !resolved.some(x => x.name === item.name)) resolved.push(item);
+  }
+  const situational = deriveSituationalNames(champData, enemies, resolved.map(x => x.name));
+  for (const name of situational) {
+    const item = await resolveItem(name);
+    if (item && !resolved.some(x => x.name === item.name)) resolved.push(item);
+    if (resolved.length >= target) break;
+  }
+  return resolved.slice(0, target);
+}
+
+async function datasetBuildForChampion(champion, role = "", allies = "", enemies = "") {
+  const dd = await getDDragon();
+  const data = getChamp(champion);
+  if (!data) return null;
+  const champKey = dd.championKeyMap[normalizeKey(champion)] || dd.championKeyMap[normalizeKey(findChamp(champion)?.name || champion)] || "";
+  const primaryRunePage = await normalizeRunePage(data.runes || {});
+  const buildItems = await ensureBuildItems(data, data.build || [], enemies);
+  const spells = await Promise.all((data.f || ["Flash", "Ignite"]).slice(0,2).map(resolveSpellByName));
+  return {
+    source: "dataset+ddragon",
+    patch: dd.patch,
+    champion: findChamp(champion)?.name || champion,
+    championKey: champKey,
+    championIcon: currentChampionIcon(champKey, dd.patch),
+    role: role || data.role || "",
+    cls: data.cls || "",
+    starter: data.ini || "",
+    spells: spells.filter(Boolean),
+    runes: primaryRunePage,
+    build: buildItems,
+    notes: (data.d || []).slice(0, 4),
+  };
+}
+
+async function resolveSpellByName(raw) {
+  const dd = await getDDragon();
+  if (!raw) return null;
+  return dd.spellByName[normalizeKey(raw)] || null;
+}
+
+async function getLiveClient() {
+  const cached = cGet("live");
+  if (cached) return cached;
+  try {
+    const r = await axios.get("https://127.0.0.1:2999/liveclientdata/allgamedata", { httpsAgent: LIVE_AGENT, timeout: 1200 });
+    return cSet("live", r.data, TTL.live);
+  } catch {
+    return null;
+  }
+}
+
+async function riotChampionBuild(champion, role = "", enemies = "", allies = "") {
+  if (!RIOT_KEY) return null;
+  const dd = await getDDragon();
+  const champKey = dd.championKeyMap[normalizeKey(champion)];
+  if (!champKey) return null;
+  const champId = Object.entries(dd.championIdMap).find(([, key]) => key === champKey)?.[0];
+  if (!champId) return null;
+  const lane = ROLE_MAP[role] || role || "";
+  const cacheKey = `riotbuild:${champKey}:${lane}`;
+  const cached = cGet(cacheKey);
+  if (cached) return cached;
+
+  const riotGet = async (base, url) => {
+    const r = await axios.get(base + url, { timeout: 8000, headers: { "X-Riot-Token": RIOT_KEY } });
+    return r.data;
+  };
+  try {
+    const ladder = await riotGet("https://br1.api.riotgames.com", "/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5");
+    const entries = (ladder.entries || []).slice().sort((a,b)=> (b.leaguePoints||0)-(a.leaguePoints||0)).slice(0, 12);
+    const samples = [];
+    for (const entry of entries) {
+      if (samples.length >= 10) break;
+      try {
+        const summ = await riotGet("https://br1.api.riotgames.com", `/lol/summoner/v4/summoners/${entry.summonerId}`);
+        const matchIds = await riotGet("https://americas.api.riotgames.com", `/lol/match/v5/matches/by-puuid/${summ.puuid}/ids?queue=420&count=5`);
+        for (const matchId of matchIds) {
+          const match = await riotGet("https://americas.api.riotgames.com", `/lol/match/v5/matches/${matchId}`);
+          const part = (match.info?.participants || []).find(p => String(p.championId) === String(champId) && (!lane || LIVE_ROLE_MAP[p.teamPosition] === lane));
+          if (!part) continue;
+          const primaryStyle = part.perks?.styles?.[0] || {};
+          const secondaryStyle = part.perks?.styles?.[1] || {};
+          samples.push({
+            items: [part.item0, part.item1, part.item2, part.item3, part.item4, part.item5].filter(x => x > 0),
+            primaryTree: primaryStyle.style,
+            primaryRunes: (primaryStyle.selections || []).map(s => s.perk).slice(0,4),
+            secondaryTree: secondaryStyle.style,
+            secondaryRunes: (secondaryStyle.selections || []).map(s => s.perk).slice(0,2),
+            spells: [part.summoner1Id, part.summoner2Id],
+            win: part.win,
+            cls: getChamp(champion)?.cls || "",
+          });
+          if (samples.length >= 12) break;
+        }
+      } catch {}
+    }
+    if (!samples.length) return null;
+
+    const itemFreq = new Map();
+    const spellFreq = new Map();
+    const runePages = new Map();
+    for (const s of samples) {
+      for (const it of s.items) itemFreq.set(String(it), (itemFreq.get(String(it)) || 0) + 1);
+      const spKey = s.spells.slice().sort((a,b)=>a-b).join("|");
+      spellFreq.set(spKey, (spellFreq.get(spKey) || 0) + 1);
+      const rKey = JSON.stringify({ p: s.primaryTree, pr: s.primaryRunes, s: s.secondaryTree, sr: s.secondaryRunes });
+      runePages.set(rKey, (runePages.get(rKey) || 0) + 1);
+    }
+    const topItems = [...itemFreq.entries()].sort((a,b)=>b[1]-a[1]).map(([id])=>Number(id)).slice(0,6);
+    const topSpellsKey = [...spellFreq.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0] || "4|14";
+    const [sp1, sp2] = topSpellsKey.split("|");
+    const topRuneKey = [...runePages.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0];
+    const rp = topRuneKey ? JSON.parse(topRuneKey) : null;
+    const buildItems = await ensureBuildItems(getChamp(champion), topItems, enemies);
+    const runes = rp ? {
+      primaryTree: await resolveRune(rp.p, true),
+      secondaryTree: await resolveRune(rp.s, true),
+      primary: (await Promise.all((rp.pr || []).slice(0,4).map(x => resolveRune(x)))).filter(Boolean),
+      secondary: (await Promise.all((rp.sr || []).slice(0,2).map(x => resolveRune(x)))).filter(Boolean),
+      shards: ["Adaptive Force", "Adaptive Force", getChamp(champion)?.cls === "tank" ? "Health Scaling" : "Armor"],
+    } : await normalizeRunePage(getChamp(champion)?.runes || {});
+
+    const result = {
+      source: "riot-high-elo",
+      patch: dd.patch,
+      champion: findChamp(champion)?.name || champion,
+      championKey: champKey,
+      championIcon: currentChampionIcon(champKey, dd.patch),
+      role: lane || getChamp(champion)?.role || "",
+      cls: getChamp(champion)?.cls || "",
+      starter: getChamp(champion)?.ini || "",
+      spells: [dd.spellById[String(sp1)], dd.spellById[String(sp2)]].filter(Boolean),
+      runes,
+      build: buildItems,
+      notes: (getChamp(champion)?.d || []).slice(0, 4),
+      sampleCount: samples.length,
+    };
+    return cSet(cacheKey, result, TTL.riotBuild);
+  } catch {
+    return null;
+  }
+}
+
+// pick engine from dataset only
 const POOL = {
   top:["aatrox","camille","darius","fiora","garen","gnar","gwen","irelia","jax","jayce","kayle","kennen","ksante","mordekaiser","ornn","renekton","riven","rumble","sett","shen","sion","trundle","urgot","volibear","wukong","yorick","ambessa"],
-  jungle:["amumu","belveth","briar","diana","elise","evelynn","fiddlesticks","gragas","graves","hecarim","ivern","jarvaniv","kayn","khazix","kindred","leesin","lillia","masteryi","nidalee","nocturne","nunu","rammus","reksai","rengar","sejuani","shaco","taliyah","udyr","vi","viego","warwick","wukong","xinzhao","zac","karthus"],
-  mid:["ahri","akali","akshan","anivia","annie","aurelionsol","azir","cassiopeia","corki","ekko","fizz","galio","heimerdinger","hwei","kassadin","katarina","leblanc","lissandra","lux","malzahar","mel","naafiri","neeko","orianna","qiyana","ryze","syndra","sylas","talon","twistedfate","veigar","vex","viktor","vladimir","xerath","yasuo","yone","zed","ziggs","zoe"],
-  adc:["aphelios","ashe","caitlyn","draven","ezreal","jhin","jinx","kaisa","kalista","kogmaw","lucian","missfortune","nilah","samira","sivir","smolder","tristana","twitch","varus","vayne","xayah","zeri"],
+  jungle:["amumu","belveth","briar","diana","elise","evelynn","fiddlesticks","graves","hecarim","ivern","jarvaniv","kayn","khazix","kindred","leesin","lillia","masteryi","nidalee","nocturne","nunu","reksai","rengar","sejuani","shaco","taliyah","udyr","vi","viego","warwick","wukong","xinzhao","zac","karthus"],
+  mid:["ahri","akali","akshan","anivia","annie","aurelionsol","aurora","azir","cassiopeia","corki","ekko","fizz","galio","hwei","kassadin","katarina","leblanc","lissandra","lux","malzahar","mel","naafiri","neeko","orianna","qiyana","ryze","syndra","sylas","talon","twistedfate","veigar","vel","vex","viktor","vladimir","xerath","yasuo","yone","zed","ziggs","zoe"],
+  adc:["aphelios","ashe","caitlyn","draven","ezreal","jhin","jinx","kaisa","kalista","kogmaw","lucian","misfortune","nilah","samira","sivir","smolder","tristana","twitch","varus","vayne","xayah","yunara","zeri"],
   support:["alistar","bard","blitzcrank","brand","braum","janna","karma","leona","lulu","milio","morgana","nami","nautilus","pyke","rakan","rell","renata","seraphine","sona","soraka","tahm","taric","thresh","yuumi","zilean","zyra","swain","senna"],
 };
 const COMP_REGEX = {
   engage_duro:/malphite|amumu|jarvaniv|sejuani|leona|nautilus|blitzcrank|alistar|rell|wukong/,
-  poke:/jayce|zoe|syndra|xerath|nidalee|ezreal|corki|karma|lux|caitlyn/,
+  poke:/jayce|zoe|syndra|xerath|vel|nidalee|ezreal|corki|karma|lux|caitlyn/,
   assassino:/zed|talon|rengar|khazix|akali|diana|leblanc|fizz|katarina|nocturne|evelynn/,
   split_push:/camille|fiora|jax|tryndamere|yorick|nasus|riven|irelia/,
   teamfight:/orianna|azir|amumu|malphite|zyra|rumble|kennen|jarvaniv|wukong/,
@@ -316,323 +456,177 @@ const COMP_SCORE = {
   engage_duro:{ malphite:5, kennen:4, rumble:4, lissandra:4, janna:5, morgana:4, yasuo:5, yone:4, vex:4 },
   poke:{ vladimir:4, kassadin:4, mordekaiser:4, diana:3, fizz:3, vex:3, zed:3, akali:3 },
   assassino:{ malzahar:5, lissandra:4, galio:4, leona:3, nautilus:3, vex:4, lulu:4 },
-  cura_pesada:{ veigar:3, karthus:3, zed:3, katarina:2 },
-  teamfight:{ orianna:5, azir:4, amumu:4, malphite:5, kennen:4, fiddlesticks:5, wukong:4, jarvaniv:3 },
+  cura_pesada:{ veigar:3, karthus:3, zed:3 },
+  teamfight:{ orianna:5, azir:4, amumu:4, malphite:5, kennen:4, fiddlesticks:5, wukong:4 },
   split_push:{ shen:5, twistedfate:4, nocturne:4 },
-  carry_ad:{ malphite:4, leona:3, nautilus:3, alistar:3 },
-  carry_ap:{ galio:4, kassadin:4, ksante:3, malphite:3 },
-  cc_pesado:{ olaf:5, gangplank:4, garen:3 },
 };
-function calcCompBonus(champKey, enemies) {
-  const e = String(enemies || "").toLowerCase();
-  let b = 0;
-  for (const [tipo, rx] of Object.entries(COMP_REGEX)) if (rx.test(e) && COMP_SCORE[tipo]?.[champKey]) b += COMP_SCORE[tipo][champKey];
-  return Math.min(b, 8);
+function calcMatchupScore(champKey, enemyKeys) {
+  const champData = D[champKey];
+  if (!champData?.vs || enemyKeys.length === 0) return { avg: 50, worst: 50 };
+  const wrs = enemyKeys.map(ek => champData.vs[ek] || champData.vs[Object.keys(champData.vs).find(k => normalizeKey(k) === ek)] || 50);
+  return { avg: wrs.reduce((a,b)=>a+b,0)/wrs.length, worst: Math.min(...wrs) };
 }
-function calcSynergyBonus(champKey, allies) {
-  const c = D[champKey]; if (!c?.syn) return 0;
+function calcSynergyBonus(champKey, allyKeys) {
+  const data = D[champKey];
+  if (!data?.syn) return 0;
   let b = 0;
-  for (const ally of allies) {
-    const akey = getChampKey(ally);
-    if (c.syn[titleCaseKey(akey)] != null) b += c.syn[titleCaseKey(akey)];
-    if (c.syn[akey] != null) b += c.syn[akey];
-    const ad = D[akey];
-    if (ad?.syn?.[titleCaseKey(champKey)] != null) b += ad.syn[titleCaseKey(champKey)];
-    if (ad?.syn?.[champKey] != null) b += ad.syn[champKey];
+  for (const ally of allyKeys) {
+    if (data.syn[ally]) b += data.syn[ally];
+    const ad = D[ally];
+    if (ad?.syn?.[champKey]) b += ad.syn[champKey];
   }
   return Math.min(b, 10);
 }
-function calcMatchupScore(champKey, enemyKeys) {
-  const c = D[champKey];
-  if (!c?.vs || !enemyKeys.length) return { avg: 50, worst: 50, hasData: false };
-  const wrs = enemyKeys.map(ek => c.vs[titleCaseKey(ek)] ?? c.vs[ek] ?? 50);
-  return { avg: wrs.reduce((a,b)=>a+b,0)/wrs.length, worst: Math.min(...wrs), hasData: wrs.some(v => v !== 50) };
+function calcCompBonus(champKey, enemies) {
+  let b=0; const e = enemies.toLowerCase();
+  for (const [tipo,regex] of Object.entries(COMP_REGEX)) if (regex.test(e) && COMP_SCORE[tipo]?.[champKey]) b += COMP_SCORE[tipo][champKey];
+  return Math.min(b, 10);
 }
-function calcularMelhorPick({ role, allies, enemies, bans = "" }) {
-  const lane = LANE_MAP[String(role || "").toLowerCase()] || "mid";
+function formatChampName(key) { return findChamp(key)?.name || key.charAt(0).toUpperCase() + key.slice(1); }
+function calcularMelhorPick({ role = "mid", allies = "", enemies = "", bans = "" }) {
+  const lane = ROLE_MAP[role] || "mid";
   const pool = POOL[lane] || POOL.mid;
-  const enemyKeys = parseList(enemies).map(getChampKey).filter(Boolean).slice(0,5);
-  const allyKeys = parseList(allies).map(getChampKey).filter(Boolean).slice(0,4);
-  const banKeys = parseList(bans).map(getChampKey).filter(Boolean);
+  const enemyKeys = parseList(enemies).map(normalizeKey).slice(0,5);
+  const allyKeys = parseList(allies).map(normalizeKey).slice(0,4);
+  const banKeys = parseList(bans).map(normalizeKey);
   const out = [];
   for (const champKey of pool) {
-    if (banKeys.includes(champKey)) continue;
-    const c = D[champKey]; if (!c) continue;
-    const { avg, worst, hasData } = calcMatchupScore(champKey, enemyKeys);
+    if (banKeys.includes(champKey) || enemyKeys.includes(champKey)) continue;
+    const data = D[champKey];
+    if (!data) continue;
+    const { avg, worst } = calcMatchupScore(champKey, enemyKeys);
     const score = avg * 0.7 + worst * 0.3 + calcSynergyBonus(champKey, allyKeys) + calcCompBonus(champKey, enemies);
-    out.push({
-      champKey,
-      champ: titleCaseKey(champKey),
-      role: lane,
-      score: Math.round(score * 10) / 10,
-      avgWR: Math.round(avg * 10) / 10,
-      worstWR: Math.round(worst * 10) / 10,
-      synergy: calcSynergyBonus(champKey, allyKeys),
-      compBonus: calcCompBonus(champKey, enemies),
-      hasMatchupData: hasData,
-      data: c,
-    });
+    out.push({ champ: formatChampName(champKey), champKey, role: lane, score: Math.round(score), avgWR: Math.round(avg), worstWR: Math.round(worst), synergy: calcSynergyBonus(champKey, allyKeys), compBonus: calcCompBonus(champKey, enemies), data });
   }
   return out.sort((a,b)=>b.score-a.score).slice(0,3);
 }
 
-async function enrichPicksWithAssets(picks) {
-  const champsDD = await getChampionsDD();
-  const spellsDD = await getSummonerSpellsDD();
-  const runesDD = await getRunesDD();
-  return picks.map(p => {
-    const dd = champsDD[norm(p.champKey)] || champsDD[norm(p.champ)];
-    const d = p.data || {};
-    const key = runesDD.byName[norm(d.runes?.key)] || runesDD.byName[norm(RUNE_ALIAS[norm(d.runes?.key)] || d.runes?.key)] || null;
+async function resolveBuild(champion, role, allies, enemies) {
+  return await riotChampionBuild(champion, role, enemies, allies) || await datasetBuildForChampion(champion, role, allies, enemies);
+}
+
+function computeLiveRecommendation(live, min, champion, buildInfo) {
+  if (!live) {
     return {
-      ...p,
-      image: dd?.image || "",
-      data: {
-        ...d,
-        spells: (d.f || []).map(sp => spellsDD[norm(sp)] || { name: sp, image: "" }),
-        runes: { ...(d.runes || {}), keyIcon: key?.icon || "", keyName: key?.name || d.runes?.key || "" },
-      }
+      acao: min < 3 ? "Lane with discipline" : min < 14 ? "Play for next objective" : "Group before contesting",
+      urgencia: min < 6 ? "baixa" : "media",
+      detalhes: `Minute ${min}: use waves and vision before fighting.`,
+      observacoes: ["No live client data. Using fallback context.", buildInfo ? `Current build source: ${buildInfo.source}` : "Manual champion build available.", min >= 14 ? "Track dragon/baron setup." : "Track jungle pathing and recalls."],
+      fonte: "fallback",
     };
-  });
-}
-
-// ----------------------- live client -----------------------
-async function getLiveClient() {
-  try {
-    const r = await axios.get("https://127.0.0.1:2999/liveclientdata/allgamedata", { httpsAgent: liveClientAgent, timeout: 1200 });
-    return r.data;
-  } catch {
-    return null;
   }
-}
-function summarizeLiveClient(lc) {
-  if (!lc) return null;
-  const all = lc.allPlayers || [];
-  const activeName = lc.activePlayer?.summonerName || lc.activePlayer?.riotIdGameName || "";
-  const me = all.find(p => p.summonerName === activeName) || all.find(p => p.isBot === false && p.team === "ORDER") || all[0];
-  const myTeam = me?.team || "ORDER";
-  const allies = all.filter(p => p.team === myTeam && p.summonerName !== me?.summonerName).map(p => p.championName);
-  const enemies = all.filter(p => p.team !== myTeam).map(p => p.championName);
-  const enemyThreat = all.filter(p => p.team !== myTeam).sort((a,b)=>((b.scores?.kills||0)-(a.scores?.kills||0)) || ((b.scores?.creepScore||0)-(a.scores?.creepScore||0)))[0];
-  return {
-    gameTime: Math.floor(lc.gameData?.gameTime || 0),
-    phase: lc.gameData?.gameMode || "CLASSIC",
-    myChampion: me?.championName || "",
-    mySummoner: me?.summonerName || "",
-    myLevel: me?.level || 1,
-    myGold: lc.activePlayer?.currentGold || 0,
-    myItems: me?.items || [],
-    myScores: me?.scores || {},
-    allies,
-    enemies,
-    enemyThreat: enemyThreat ? { champ: enemyThreat.championName, kills: enemyThreat.scores?.kills || 0, deaths: enemyThreat.scores?.deaths || 0 } : null,
-    events: (lc.events?.Events || []).slice(-8),
-  };
-}
-function buildRecommendation({ minute, context, live }) {
-  const champ = context.champion || live?.myChampion || "";
-  const roleKey = norm(context.role || getChamp(champ)?.role || "");
-  const enemyText = context.enemies || (live?.enemies || []).join(", ");
-  const alliesText = context.allies || (live?.allies || []).join(", ");
-  const obs = [];
-  let acao = "Farm safely and track map";
+  const activeName = live.activePlayer?.riotIdGameName || live.activePlayer?.summonerName;
+  const active = (live.allPlayers || []).find(p => p.summonerName === activeName || p.riotIdGameName === activeName) || null;
+  const events = live.events?.Events || [];
+  const recent = events.slice(-5).map(e => e.EventName || "");
+  const kills = active?.scores?.kills || 0;
+  const deaths = active?.scores?.deaths || 0;
+  const assists = active?.scores?.assists || 0;
+  const gold = live.activePlayer?.currentGold || 0;
+  const itemCount = (active?.items || []).filter(Boolean).length;
+  const cs = active?.scores?.creepScore || 0;
+  const teamAdv = (live.allPlayers || []).reduce((n,p)=>n + ((p.isDead?0:1) * (p.team === active?.team ? 1 : -1)),0);
+
+  let acao = "Farm and hold tempo";
   let urgencia = "baixa";
-  let detalhes = `Minute ${minute}: stabilize lane and prepare next wave/objective.`;
+  let detalhes = `KDA ${kills}/${deaths}/${assists} · ${cs} CS · ${gold} gold.`;
+  const observacoes = [];
 
-  const isJg = roleKey === "jungle";
-  const isSupport = roleKey === "support" || roleKey === "sup";
-  const hasDragonWindow = minute >= 5 && minute < 28;
-  const hasBaronWindow = minute >= 20;
-
-  if (minute < 3) {
-    acao = isJg ? "Full clear toward prio" : isSupport ? "Trade around push timing" : "Lane with discipline";
-    detalhes = `Minute ${minute}: respect level spikes, keep wave under control and avoid low-value fights.`;
-    obs.push("Use vision before contesting river.");
-  } else if (minute < 8) {
-    acao = isJg ? "Contest river on reset" : "Crash wave then move";
+  if (active?.isDead) {
+    acao = "Respawn then reset vision";
     urgencia = "media";
-    detalhes = `Early tempo window: secure prio and be first on river/skirmish.`;
-    obs.push("Track jungle pathing before extending.");
-  } else if (minute < 14) {
-    acao = hasDragonWindow ? "Set vision for dragon" : "Play for lane reset";
+    observacoes.push("Você está morto — evite planejar fight imediata.");
+  } else if (gold >= 1300 && min > 3) {
+    acao = "Recall and spend gold";
     urgencia = "media";
-    detalhes = `Mid-early game: move first to neutral setup instead of greeting for one extra wave.`;
-    obs.push("Push one more wave only if your lane state is safe.");
-  } else if (minute < 20) {
-    acao = "Group for objective control";
+    observacoes.push(`Gold alto (${gold}) — power spike parado.`);
+  } else if (recent.includes("DragonKill") || (min >= 5 && min < 21 && min % 5 <= 1)) {
+    acao = "Set vision for dragon";
     urgencia = "alta";
-    detalhes = `Second/third objective window: spend gold early and arrive first with vision.`;
-    obs.push("Do not trade side farm for free setup.");
-  } else {
-    acao = hasBaronWindow ? "Control Baron vision" : "Play with team tempo";
+    observacoes.push("Janela de dragão — jogue pelo lado do objetivo.");
+  } else if (min >= 20 && (recent.includes("BaronKill") || min % 6 <= 1)) {
+    acao = "Control Baron area";
     urgencia = "alta";
-    detalhes = `Late game: vision denial, side-wave timing and reset windows matter more than raw CS.`;
-    obs.push("Never face-check alone.");
+    observacoes.push("Baron é o ponto central do mapa agora.");
+  } else if (teamAdv < 0) {
+    acao = "Avoid even-number fights";
+    urgencia = "media";
+    observacoes.push("Seu time parece em desvantagem no mapa agora.");
+  } else if (itemCount < 2 && min >= 8) {
+    acao = "Farm safely to next item";
+    urgencia = "media";
+    observacoes.push("Você ainda não fechou core cedo o bastante.");
+  } else if (kills >= 3 && deaths <= 1) {
+    acao = "Push lead on side first";
+    urgencia = "media";
+    observacoes.push("Você está forte — force wave, then move.");
   }
 
-  if (live) {
-    const k = live.myScores?.kills || 0, d = live.myScores?.deaths || 0, a = live.myScores?.assists || 0;
-    const cs = live.myScores?.creepScore || 0;
-    obs.unshift(`KDA ${k}/${d}/${a} · CS ${cs} · Gold ${Math.round(live.myGold || 0)}.`);
-
-    if ((live.myGold || 0) >= 1300) {
-      acao = "Reset and spend gold";
-      urgencia = urgencia === "alta" ? "alta" : "media";
-      detalhes = `You are holding ${Math.round(live.myGold)} gold. Your next buy is stronger than one extra wave.`;
-    }
-
-    const recent = (live.events || []).slice(-3);
-    const championKill = recent.find(e => e.EventName === "ChampionKill");
-    const dragon = recent.find(e => /DragonKill/i.test(e.EventName || ""));
-    const baron = recent.find(e => /BaronKill/i.test(e.EventName || ""));
-
-    if (championKill) {
-      acao = "Push and rotate first";
-      urgencia = "alta";
-      detalhes = "A recent kill changed map priority. Push nearest wave and rotate before the enemy resets.";
-      obs.unshift("Recent kill happened: expect cross-map response or objective start.");
-    }
-    if (dragon) {
-      acao = "Trade top side or reset";
-      urgencia = "alta";
-      detalhes = "Dragon was just taken. Immediately decide between cross-map trade, tempo reset or catching next wave.";
-      obs.unshift("Dragon event detected on the map.");
-    }
-    if (baron) {
-      acao = "Defend vision and side waves";
-      urgencia = "alta";
-      detalhes = "Baron was just taken. Avoid blind fights and set wave clear before contesting space.";
-      obs.unshift("Baron event detected on the map.");
-    }
-    if (live.enemyThreat?.kills >= 5) {
-      obs.unshift(`${live.enemyThreat.champ} is fed (${live.enemyThreat.kills}/${live.enemyThreat.deaths}). Respect fog, track flanks and itemize defensively.`);
-      if (urgencia !== "alta") urgencia = "media";
-    }
-    if (isJg && hasDragonWindow) obs.push("As jungler, sync your camp reset with objective spawn timers.");
-    if (!isJg && minute >= 8 && minute <= 22) obs.push("Ping your reset 20-30 seconds before objective spawn.");
-  } else {
-    obs.push("Live Client not detected — using capture context and timer only.");
-  }
-
-  if (/malphite|amumu|wukong|nautilus|leona/.test(enemyText.toLowerCase())) obs.push("Enemy engage is strong — keep flash/spacing for the first engage.");
-  if (/soraka|yuumi|sona|swain|aatrox/.test(enemyText.toLowerCase())) obs.push("Anti-heal becomes valuable this game.");
-  if (/jinx|caitlyn|jhin|kaisa|xayah/.test(alliesText.toLowerCase())) obs.push("Play around your carry spike and avoid forcing before setup.");
-  if (/splitpush|camille|fiora|jax|tryndamere|yorick/.test(enemyText.toLowerCase())) obs.push("Match side waves earlier — do not give free towers to split push.");
-
-  return { acao, urgencia, detalhes, observacoes: uniq(obs).slice(0,6) };
+  if (buildInfo?.build?.length) observacoes.push(`Next item path: ${buildInfo.build.slice(0, Math.min(3, buildInfo.build.length)).map(i => i.name).join(" → ")}`);
+  if (!observacoes.length) observacoes.push("Jogue com visão antes de entrar em range de engage.");
+  return { acao, urgencia, detalhes, observacoes: observacoes.slice(0,4), fonte: "liveclient" };
 }
 
-// ----------------------- groq -----------------------
-async function explainPickAndBuild({ question, picks, build }) {
-  if (!GROQ_KEY) return "GROQ_KEY not configured. Structured data is still available above.";
-  const p1 = picks?.[0];
-  const prompt = [
-    `Question: ${question}`,
-    p1 ? `Top pick: ${p1.champ} (${p1.role}) | score ${p1.score} | avgWR ${p1.avgWR}%` : "",
-    build ? `Champion: ${build.champion} | role ${build.role} | class ${build.cls}` : "",
-    build ? `Runes: ${build.runes?.key?.name || build.runes?.keyName || ""} | ${build.runes?.primaryTree?.name || ""} | ${build.runes?.secondaryTree?.name || ""}` : "",
-    build ? `Build: ${(build.items || []).map(i => i.name).join(" > ")}` : "",
-    "Use ONLY the structured data. Do not invent items or runes. Answer in Portuguese, but keep item/rune names in English exactly as provided.",
-  ].filter(Boolean).join("\n");
-  const r = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
-    model: "llama-3.3-70b-versatile",
-    temperature: 0.1,
-    max_tokens: 500,
-    messages: [
-      { role: "system", content: "You are a professional League of Legends coach. Never invent game data." },
-      { role: "user", content: prompt },
-    ],
-  }, { headers: { Authorization: `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" }, timeout: 25000 });
-  return r.data.choices?.[0]?.message?.content || "Sem resposta.";
-}
-
-// ----------------------- routes -----------------------
 app.use(express.static(__dirname));
-app.get("/", async (_req, res) => {
-  res.sendFile(path.join(__dirname, "nexus-oracle-live.html"));
-});
-app.get("/status", async (_req, res) => {
+app.get("/", (req,res) => res.sendFile(path.join(__dirname, "nexus-oracle-live.html")));
+app.get("/status", async (req, res) => {
   const patch = await getPatch();
-  const live = summarizeLiveClient(await getLiveClient());
-  res.json({
-    status: "online",
-    patch,
-    dataset: `${CHAMP_COUNT} champions`,
-    liveClient: !!live,
-    liveChampion: live?.myChampion || "",
-    language: "UI PT-BR · build/runes EN",
-  });
+  const live = await getLiveClient();
+  res.json({ status: "online", patch, dataset: `${CHAMP_COUNT} champions`, liveClient: !!live, language: "UI pt-BR / build+runes English" });
 });
-app.get("/champions", async (_req, res) => {
-  const champs = await getChampionsDD();
-  const unique = uniq(Object.values(champs).map(c => c.id)).map(id => Object.values(champs).find(c => c.id === id));
-  res.json(unique.sort((a,b)=>a.name.localeCompare(b.name)).map(c => ({ key: norm(c.id), name: c.name, image: c.image, role: D[norm(c.id)]?.role || "" })));
+app.get("/manifest", async (req,res)=>{
+  const dd = await getDDragon();
+  res.json({ patch: dd.patch });
 });
-app.post("/resolve-build", async (req, res) => {
-  try {
-    const { champion = "", role = "" } = req.body || {};
-    if (!champion) return res.status(400).json({ error: "champion required" });
-    const build = await resolveBuildAndRunes(champion, role);
-    if (!build) return res.status(404).json({ error: "champion not found" });
-    res.json(build);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+app.post("/pick", async (req,res)=>{
+  const { role = "mid", allies = "", enemies = "", bans = "" } = req.body || {};
+  const picks = await Promise.all(calcularMelhorPick({ role, allies, enemies, bans }).map(async p => ({ ...p, buildInfo: await datasetBuildForChampion(p.champ, p.role, allies, enemies) })));
+  res.json({ picks: picks.map(p => ({ champ: p.champ, champKey: p.buildInfo?.championKey || "", championIcon: p.buildInfo?.championIcon || "", role: p.role, score: p.score, avgWR: p.avgWR, worstWR: p.worstWR, synergy: p.synergy, compBonus: p.compBonus, data: { cls: p.data?.cls || "", runes: p.buildInfo?.runes || null, build: p.buildInfo?.build || [], starter: p.buildInfo?.starter || "", spells: p.buildInfo?.spells || [] } })) });
 });
-app.post("/oracle", async (req, res) => {
+app.post("/resolve-build", async (req,res)=>{
+  const { champion = "", role = "", allies = "", enemies = "" } = req.body || {};
+  if (!champion) return res.status(400).json({ error: "champion required" });
+  const build = await resolveBuild(champion, role, allies, enemies);
+  if (!build) return res.status(404).json({ error: "champion not found" });
+  res.json(build);
+});
+app.post("/oracle", async (req,res)=>{
   try {
     const { question = "", context = {} } = req.body || {};
-    const live = summarizeLiveClient(await getLiveClient());
-    const ctx = {
-      champion: context.champion || live?.myChampion || "",
-      role: context.role || getChamp(context.champion || live?.myChampion || "")?.role || "mid",
-      allies: context.allies || (live?.allies || []).join(", "),
-      enemies: context.enemies || (live?.enemies || []).join(", "),
-      bans: context.bans || "",
-    };
-    const picks = await enrichPicksWithAssets(calcularMelhorPick(ctx));
-    const build = ctx.champion ? await resolveBuildAndRunes(ctx.champion, ctx.role) : (picks[0] ? await resolveBuildAndRunes(picks[0].champKey, picks[0].role) : null);
-    const text = await explainPickAndBuild({ question, picks, build });
-    const patch = await getPatch();
-    res.json({ text, patch, picks_calculados: picks, build });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const { champion = "", role = "", allies = "", enemies = "", bans = "" } = context;
+    const picks = calcularMelhorPick({ role, allies, enemies, bans });
+    const build = champion ? await resolveBuild(champion, role, allies, enemies) : null;
+    if (!GROQ_KEY) {
+      return res.json({ text: champion ? `Build for ${build?.champion || champion}: ${build?.build?.map(x=>x.name).join(", ")}` : `Top picks: ${picks.map(p=>p.champ).join(", ")}`, picks_calculados: picks.map(p => ({ champ: p.champ, score: p.score, avgWR: p.avgWR })) });
+    }
+    const prompt = [
+      `Question: ${question}`,
+      `Top 3 picks: ${picks.map(p => `${p.champ} (score ${p.score}, WR ${p.avgWR}%)`).join(" | ")}`,
+      build ? `Current build source: ${build.source}\nChampion: ${build.champion} (${build.role})\nPrimary: ${build.runes.primary.map(r=>r.name).join(" / ")}\nSecondary: ${build.runes.secondary.map(r=>r.name).join(" / ")}\nShards: ${build.runes.shards.join(" / ")}\nBuild: ${build.build.map(i=>i.name).join(" -> ")}` : "",
+      `Allies: ${allies}`,
+      `Enemies: ${enemies}`,
+    ].filter(Boolean).join("\n\n");
+    const text = await axios.post("https://api.groq.com/openai/v1/chat/completions", { model: "llama-3.3-70b-versatile", temperature: 0.1, max_tokens: 700, messages: [{ role: "system", content: "You are a League of Legends coach. Use only provided data. Do not invent items or runes. Reply in Brazilian Portuguese." }, { role: "user", content: prompt }] }, { headers: { Authorization: `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" }, timeout: 25000 }).then(r=>r.data.choices[0].message.content);
+    res.json({ text, picks_calculados: picks.map(p => ({ champ: p.champ, score: p.score, avgWR: p.avgWR })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.post("/analyze", async (req, res) => {
+app.post("/analyze", async (req,res)=>{
   try {
     const { context = {}, gameTime = 0 } = req.body || {};
-    const live = summarizeLiveClient(await getLiveClient());
-    const minute = Math.floor((live?.gameTime || safeInt(gameTime, 0)) / 60);
-    const ctx = {
-      champion: context.champion || live?.myChampion || "",
-      role: context.role || getChamp(context.champion || live?.myChampion || "")?.role || "mid",
-      allies: context.allies || (live?.allies || []).join(", "),
-      enemies: context.enemies || (live?.enemies || []).join(", "),
-      bans: context.bans || "",
-    };
-    const picks = await enrichPicksWithAssets(calcularMelhorPick(ctx));
-    const selectedBuild = ctx.champion ? await resolveBuildAndRunes(ctx.champion, ctx.role) : (picks[0] ? await resolveBuildAndRunes(picks[0].champKey, picks[0].role) : null);
-    const rec = buildRecommendation({ minute, context: ctx, live });
-    const inferredRole = getChamp(ctx.champion)?.role || ctx.role || (picks[0]?.role || "");
-    res.json({
-      ...rec,
-      minute,
-      liveClient: !!live,
-      context: { ...ctx, role: inferredRole },
-      picks,
-      build: selectedBuild,
-      threat: live?.enemyThreat || null,
-      mapAlerts: rec.observacoes,
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const { champion = "", role = "", allies = "", enemies = "", bans = "" } = context;
+    const live = await getLiveClient();
+    const picks = await Promise.all(calcularMelhorPick({ role, allies, enemies, bans }).map(async p => ({ ...p, buildInfo: await datasetBuildForChampion(p.champ, p.role, allies, enemies) })));
+    const activeChamp = champion || live?.activePlayer?.championStats ? ((live.allPlayers || []).find(p => p.riotIdGameName === live.activePlayer?.riotIdGameName || p.summonerName === live.activePlayer?.summonerName)?.championName || champion) : champion;
+    const build = activeChamp ? await resolveBuild(activeChamp, role, allies, enemies) : (picks[0]?.buildInfo || null);
+    const rec = computeLiveRecommendation(live, parseInt(gameTime) || Math.floor((live?.gameData?.gameTime || 0)/60), activeChamp, build);
+    res.json({ ...rec, pick: picks[0]?.champ || "", picks, currentBuild: build, liveClient: !!live });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-const port = 3000;
-getPatch().then(async p => {
-  console.log(`Nexus Oracle LCK Pro | patch ${p} | dataset ${CHAMP_COUNT}`);
-  await Promise.all([getChampionsDD().catch(()=>{}), getItemsDD().catch(()=>{}), getRunesDD().catch(()=>{}), getSummonerSpellsDD().catch(()=>{})]);
-}).catch(()=>{});
-app.listen(port, () => console.log(`Servidor na porta ${port}`));
+(async () => {
+  const patch = await getPatch();
+  console.log(`Dataset carregado: ${CHAMP_COUNT} campeões`);
+  console.log(`Servidor na porta 3000`);
+  console.log(`Nexus Oracle LCK Pro | patch ${patch} | dataset ${CHAMP_COUNT}`);
+})();
+app.listen(3000);
