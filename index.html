@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nexus Oracle · Determinístico</title>
+<style>
+:root{--bg:#07101d;--panel:#0b1830;--line:#203a63;--gold:#f2d084;--txt:#d7e3ff;--muted:#8ca3c8;--accent:#50c7ff;--red:#f26b6b;--green:#58d68d;--amber:#f4c542}
+*{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#07101d,#09162b 40%,#07101d);color:var(--txt);font-family:Arial,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);background:rgba(6,12,24,.95);position:sticky;top:0}
+h1{margin:0;color:var(--gold);font-size:20px}.muted{color:var(--muted)}
+.main{display:grid;grid-template-columns:340px 1fr 420px;gap:14px;padding:14px}@media (max-width:1200px){.main{grid-template-columns:1fr}}
+.panel{background:linear-gradient(180deg,#0b1830,#0a1630);border:1px solid var(--line);border-radius:16px;overflow:hidden}.panel h2{margin:0;padding:12px 14px;color:var(--gold);font-size:14px;border-bottom:1px solid var(--line)}
+.content{padding:14px}.grid{display:grid;gap:10px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+input,select{width:100%;background:#081427;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:10px 12px}
+button{background:#10284a;border:1px solid #285086;color:var(--gold);border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+.tabs{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}.tab{padding:8px 10px;border-radius:999px;background:#0a2140;border:1px solid #2a4f81;color:var(--muted);cursor:pointer}.tab.active{color:var(--gold);border-color:#5ed0ff}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:14px}@media(max-width:800px){.cards{grid-template-columns:1fr}}
+.pick{background:#081427;border:1px solid var(--line);border-radius:14px;padding:12px;cursor:pointer}.pick.active{box-shadow:0 0 0 2px #5ed0ff inset}.pick h3{margin:0 0 6px}.score{font-size:28px;color:var(--accent);font-weight:700}
+.badges{display:flex;gap:6px;flex-wrap:wrap}.badge{background:#0a2140;border:1px solid #2a4f81;border-radius:999px;padding:4px 10px;color:var(--muted);font-size:12px}
+.row{display:flex;justify-content:space-between;gap:10px}.list{display:grid;gap:8px}.small{font-size:12px;color:var(--muted)}
+.recbox,.box{background:#081427;border:1px solid var(--line);border-radius:12px;padding:12px}.section{padding:14px;border-top:1px solid var(--line)}
+.kv{display:grid;gap:8px}.kv .row b{color:var(--gold)}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Nexus Oracle</h1><div class="muted">Draft AI determinístico · Solo Queue / Competitive</div></div>
+  <div class="muted" id="status">Conectando…</div>
+</header>
+<div class="main">
+  <div class="panel">
+    <h2>Contexto do draft</h2>
+    <div class="content grid">
+      <div class="grid2">
+        <div><label class="small">Role</label><select id="role"><option>mid</option><option>top</option><option>jungle</option><option>adc</option><option>support</option></select></div>
+        <div><label class="small">Queue mode</label><select id="queueMode"><option value="solo">Solo Queue</option><option value="competitive">Competitive / Duo</option></select></div>
+      </div>
+      <div><label class="small">Aliados</label><input id="allies" placeholder="Vi, Nautilus"></div>
+      <div><label class="small">Inimigos</label><input id="enemies" placeholder="Ahri, Sejuani"></div>
+      <div><label class="small">Bans</label><input id="bans" placeholder="Akali, Yasuo"></div>
+      <div><label class="small">Champion pool / comfort (ex.: ahri:40, syndra:10)</label><input id="comfort" placeholder="ahri:40, lissandra:12"></div>
+      <button id="runBtn">Analisar em 2 segundos</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Draft engine</h2>
+    <div class="tabs" id="tabs">
+      <div class="tab active" data-tab="top3">Top 3</div>
+      <div class="tab" data-tab="blind">Best blind</div>
+      <div class="tab" data-tab="punish">Best punish</div>
+      <div class="tab" data-tab="comfort">Best comfort</div>
+      <div class="tab" data-tab="compFit">Best comp fit</div>
+    </div>
+    <div class="cards" id="cards"></div>
+    <div class="section">
+      <div class="grid2">
+        <div class="box"><div class="small">Por que esse pick</div><div id="why" class="list"></div></div>
+        <div class="box"><div class="small">Risco / plano dos 10 minutos</div><div id="riskPlan" class="list"></div></div>
+      </div>
+      <div class="box" style="margin-top:12px">
+        <div class="small">Breakdown do score</div>
+        <div id="breakdown" class="kv"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Build / runes atuais</h2>
+    <div class="content" id="build"></div>
+    <div class="section"><div class="small">Recommendation now</div><div id="rec" class="recbox">Aguardando análise.</div></div>
+  </div>
+</div>
+<script>
+const byId = id => document.getElementById(id);
+let payload = null;
+let selected = null;
+function comfortMap(){
+  const raw = byId('comfort').value.trim();
+  const out = {};
+  raw.split(/[,;]+/).map(s=>s.trim()).filter(Boolean).forEach(pair=>{
+    const [k,v] = pair.split(':');
+    if (k && v) out[k.trim()] = Number(v) || 0;
+  });
+  return out;
+}
+async function connect(){
+  const r = await fetch('/status');
+  const d = await r.json();
+  byId('status').textContent = d.ok ? `Online · ${d.mode}` : 'Offline';
+}
+function activeTab(){ return document.querySelector('.tab.active')?.dataset.tab || 'top3'; }
+function currentList(){
+  if (!payload) return [];
+  const t = activeTab();
+  return t === 'top3' ? payload.picks : (payload.categories[t] || []);
+}
+function selectPickByKey(key){
+  selected = key;
+  render();
+}
+function currentPick(){
+  const all = [...(payload?.picks||[]), ...(payload?.categories?.blind||[]), ...(payload?.categories?.punish||[]), ...(payload?.categories?.comfort||[]), ...(payload?.categories?.compFit||[])];
+  return all.find(x=>x.champKey===selected) || all[0] || null;
+}
+function renderCards(){
+  const arr = currentList();
+  byId('cards').innerHTML = arr.map((p,i)=>`<div class="pick ${selected===p.champKey?'active':''}" onclick="selectPickByKey('${p.champKey}')">
+    <div class="small">#${i+1}</div>
+    <h3>${p.champ}</h3>
+    <div class="score">${p.score}</div>
+    <div class="small">Confidence ${p.confidence}% · WR ${p.avgWR}%</div>
+    <div class="badges">${(p.labels||[]).map(l=>`<span class="badge">${l}</span>`).join('')}</div>
+  </div>`).join('');
+}
+function renderPickMeta(){
+  const p = currentPick();
+  if (!p) return;
+  byId('why').innerHTML = (p.reasons||[]).map(r=>`<div>✔ ${r}</div>`).join('');
+  byId('riskPlan').innerHTML = `<div>⚠ ${p.risk}</div><div>🧭 ${p.plan10}</div>`;
+  const b = p.breakdown || {};
+  byId('breakdown').innerHTML = `
+    <div class="row"><span>Matchup</span><b>${b.matchup ?? '-'}</b></div>
+    <div class="row"><span>Sinergia</span><b>${b.synergy ?? '-'}</b></div>
+    <div class="row"><span>Comp fit</span><b>${b.comp ?? '-'}</b></div>
+    <div class="row"><span>Damage fit</span><b>${b.damageFit ?? '-'}</b></div>
+    <div class="row"><span>Engage/disengage</span><b>${b.engageFit ?? '-'}</b></div>
+    <div class="row"><span>Lane priority</span><b>${b.lanePrio ?? '-'}</b></div>
+    <div class="row"><span>Comfort</span><b>${b.comfort ?? '-'}</b></div>
+    <div class="row"><span>Meta confidence</span><b>${b.meta ?? '-'}</b></div>
+    <div class="row"><span>Risk</span><b>${b.risk ?? '-'}</b></div>`;
+}
+function renderBuild(){
+  const b = payload?.selectedBuild;
+  if (!b) { byId('build').innerHTML = '<div class="muted">Sem build disponível.</div>'; return; }
+  byId('build').innerHTML = `
+    <div class="list">
+      <div><b>${b.champion}</b> · ${b.role} · ${b.cls}</div>
+      <div class="small">Summoner spells</div>
+      <div>${(b.spells||[]).join(' · ') || '-'}</div>
+      <div class="small">Starter</div>
+      <div>${b.starter || '-'}</div>
+      <div class="small">Runes</div>
+      <div><b>Primary:</b> ${[b.runes?.key,b.runes?.r1,b.runes?.r2,b.runes?.r3].filter(Boolean).join(' · ')}</div>
+      <div><b>Secondary:</b> ${[b.runes?.s1,b.runes?.s2].filter(Boolean).join(' · ')}</div>
+      <div><b>Shards:</b> ${(b.runes?.sh||[]).join(' · ')}</div>
+      <div class="small">Build order</div>
+      <div class="list">${(b.build||[]).map((it,i)=>`<div>${i+1}. ${it}</div>`).join('')}</div>
+      <div class="small">Coach notes</div>
+      <div class="list">${(b.notes||[]).map(n=>`<div>• ${n}</div>`).join('')}</div>
+    </div>`;
+}
+function renderRec(){
+  const r = payload?.recommendation;
+  byId('rec').innerHTML = r ? `<div><b>${r.action}</b></div><div class="small">${r.urgency}</div><div>${r.details}</div>` : 'Aguardando análise.';
+}
+function render(){ renderCards(); renderPickMeta(); renderBuild(); renderRec(); }
+async function analyze(){
+  const body = {
+    role: byId('role').value,
+    queueMode: byId('queueMode').value,
+    allies: byId('allies').value,
+    enemies: byId('enemies').value,
+    bans: byId('bans').value,
+    selectedPick: selected,
+    playerProfile: { comfort: comfortMap() }
+  };
+  const r = await fetch('/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  payload = await r.json();
+  selected = selected || payload?.picks?.[0]?.champKey || null;
+  render();
+}
+window.selectPickByKey = selectPickByKey;
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); render(); });
+byId('runBtn').onclick = analyze;
+connect();
+</script>
+</body>
+</html>
