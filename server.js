@@ -1,358 +1,297 @@
 import express from 'express';
 import cors from 'cors';
-import axios from 'axios';
+import https from 'https';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { D, ALIASES, findChamp, CHAMP_COUNT } from './dataset.js';
+import { D, ALIASES, findChamp } from './dataset.js';
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '12mb' }));
+app.use(express.json({ limit:'2mb' }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const RIOT_KEY = process.env.RIOT_KEY || '';
-const cache = new Map();
-const cget = k => { const v = cache.get(k); return v && Date.now() - v.t < v.ttl ? v.v : null; };
-const cset = (k,v,ttl=1000*60*30) => (cache.set(k,{v,t:Date.now(),ttl}), v);
+const LIVE_AGENT = process.env.NODE_ENV === 'development'
+  ? new https.Agent({ rejectUnauthorized:false })
+  : undefined;
 
-function parseList(str='') {
-  return String(str).split(/[,;/|]+/).map(s => s.trim()).filter(Boolean);
+const roles = ['top','jungle','mid','adc','support','sup'];
+
+function norm(s=''){
+  return String(s).toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+}
+function champKey(name=''){
+  const key = norm(name);
+  return ALIASES[key] || key;
+}
+function title(k=''){
+  return D[k]?.name || k;
+}
+function parseList(input){
+  if (Array.isArray(input)) return input.map(champKey).filter(Boolean);
+  return String(input||'').split(/[,;/|]+/).map(champKey).filter(Boolean);
+}
+function uniq(arr){ return [...new Set(arr)]; }
+function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
+function avg(arr, fallback=50){ return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : fallback; }
+
+function validateContext(raw={}){
+  const role = roles.includes(raw.role) ? (raw.role==='sup'?'support':raw.role) : 'mid';
+  const allies = uniq(parseList(raw.allies)).filter(k=>D[k]).slice(0,5);
+  const enemies = uniq(parseList(raw.enemies)).filter(k=>D[k]).slice(0,5);
+  const bans = uniq(parseList(raw.bans)).filter(k=>D[k]).slice(0,10);
+  const queueMode = raw.queueMode === 'competitive' ? 'competitive' : 'solo';
+  const comfortMap = raw?.playerProfile?.comfort && typeof raw.playerProfile.comfort === 'object' ? raw.playerProfile.comfort : {};
+  const comfort = Object.fromEntries(Object.entries(comfortMap).map(([k,v])=>[champKey(k), clamp(Number(v)||0,0,1000)]));
+  return { role, allies, enemies, bans, queueMode, playerProfile:{ comfort } };
 }
 
-function normalizeName(name='') {
-  const raw = String(name).toLowerCase().trim();
-  const clean = raw.replace(/[.'’\s-]+/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  return ALIASES[raw] || ALIASES[clean] || clean;
+function getTag(champ, tag){ return D[champ]?.tags?.[tag] || 0; }
+function getProfile(champ, key){ return D[champ]?.profile?.[key] || 0; }
+function damageProfile(champs=[]){
+  return champs.reduce((acc,k)=>{
+    acc.ap += D[k]?.damage?.ap || 0;
+    acc.ad += D[k]?.damage?.ad || 0;
+    return acc;
+  }, { ap:0, ad:0 });
 }
-
-function getChamp(keyOrName='') {
-  const key = normalizeName(keyOrName);
-  return D[key] || findChamp(keyOrName);
-}
-
-function getChampKey(name='') {
-  const key = normalizeName(name);
-  return D[key] ? key : (findChamp(name) ? normalizeName(Object.keys(D).find(k => D[k] === findChamp(name)) || key) : key);
-}
-
-async function getPatch() {
-  const cached = cget('patch');
-  if (cached) return cached;
-  try {
-    const r = await axios.get('https://ddragon.leagueoflegends.com/api/versions.json', { timeout: 5000 });
-    return cset('patch', r.data[0], 1000 * 60 * 60 * 6);
-  } catch {
-    return cget('patch') || '16.6.1';
-  }
-}
-
-async function getChampionMap() {
-  const cached = cget('champMap');
-  if (cached) return cached;
-  const patch = await getPatch();
-  const r = await axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/champion.json`, { timeout: 7000 });
-  const map = {};
-  for (const [id, info] of Object.entries(r.data.data || {})) {
-    const keys = new Set([
-      id.toLowerCase(),
-      info.name.toLowerCase(),
-      info.id.toLowerCase(),
-      info.id.toLowerCase().replace(/[.'’\s-]+/g,''),
-      info.name.toLowerCase().replace(/[.'’\s-]+/g,''),
-    ]);
-    for (const k of keys) map[k] = { id: info.id, name: info.name, square: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/champion/${info.id}.png` };
-  }
-  return cset('champMap', map, 1000 * 60 * 60 * 6);
-}
-
-async function resolveChampionAsset(name='') {
-  const map = await getChampionMap();
-  const key = normalizeName(name);
-  return map[key] || map[String(name).toLowerCase()] || { id: name, name, square: '' };
-}
-
-async function getDDragon() {
-  const cached = cget('ddragon');
-  if (cached) return cached;
-  const patch = await getPatch();
-  const [runesRes, spellsRes, itemsRes] = await Promise.all([
-    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/runesReforged.json`, { timeout: 8000 }),
-    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/summoner.json`, { timeout: 8000 }),
-    axios.get(`https://ddragon.leagueoflegends.com/cdn/${patch}/data/en_US/item.json`, { timeout: 8000 })
-  ]);
-
-  const runeTrees = [];
-  const runeByName = {};
-  for (const tree of runesRes.data || []) {
-    runeTrees.push({
-      name: tree.name,
-      icon: `https://ddragon.leagueoflegends.com/cdn/img/${tree.icon}`,
-      id: tree.id,
-    });
-    runeByName[tree.name.toLowerCase()] = { name: tree.name, icon: `https://ddragon.leagueoflegends.com/cdn/img/${tree.icon}`, tree: tree.name };
-    for (const slot of tree.slots || []) {
-      for (const rune of slot.runes || []) {
-        runeByName[rune.name.toLowerCase()] = { name: rune.name, icon: `https://ddragon.leagueoflegends.com/cdn/img/${rune.icon}`, tree: tree.name };
-      }
-    }
-  }
-  const spellByName = {};
-  for (const info of Object.values(spellsRes.data.data || {})) {
-    spellByName[info.name.toLowerCase()] = { name: info.name, icon: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/spell/${info.image.full}` };
-  }
-  const itemByName = {};
-  for (const [id, info] of Object.entries(itemsRes.data.data || {})) {
-    itemByName[info.name.toLowerCase()] = { id, name: info.name, icon: `https://ddragon.leagueoflegends.com/cdn/${patch}/img/item/${id}.png` };
-  }
-  return cset('ddragon', { patch, runeByName, spellByName, itemByName, runeTrees }, 1000 * 60 * 60 * 6);
-}
-
-const RUNE_ALIASES = {
-  'conquistador':'Conqueror','precisao':'Precision','precisão':'Precision','triunfo':'Triumph','lenda: alacrity':'Legend: Alacrity','lenda: persistencia':'Legend: Haste','lenda: persistência':'Legend: Haste','golpe de misericordia':'Coup de Grace','golpe de misericórdia':'Coup de Grace',
-  'determinacao':'Resolve','determinação':'Resolve','demolir':'Demolish','inabalavel':'Unflinching','inabalável':'Unflinching','condicionamento':'Conditioning','crescimento excessivo':'Overgrowth',
-  'dominacao':'Domination','dominação':'Domination','eletrocutar':'Electrocute','colheita sombria':'Dark Harvest','sabor do sangue':'Taste of Blood','coleta de globos oculares':'Eyeball Collection','cacador ganancioso':'Treasure Hunter','caçador ganancioso':'Treasure Hunter',
-  'feiticaria':'Sorcery','feitiçaria':'Sorcery','manto de nuvem':'Nimbus Cloak','transcendencia':'Transcendence','transcendência':'Transcendence','coleta de tempestades':'Gathering Storm','chamuscar':'Scorch','invocar aery':'Summon Aery',
-  'inspiracao':'Inspiration','inspiração':'Inspiration','perspicacia cosmica':'Cosmic Insight','perspicácia cósmica':'Cosmic Insight','calcados magicos':'Magical Footwear','calçados mágicos':'Magical Footwear',
-  'flashtraption hextech':'Hextech Flashtraption','hextech flashtraption':'Hextech Flashtraption','tonico triplo':'Triple Tonic','tônico triplo':'Triple Tonic',
-  'velocidade de habilidade':'Ability Haste','adaptativo':'Adaptive Force','armadura':'Armor','resistencia magica':'Magic Resist','resistência mágica':'Magic Resist','velocidade de ataque':'Attack Speed'
-};
-
-function normalizeAliasName(name='') {
-  const low = String(name).toLowerCase().trim();
-  return RUNE_ALIASES[low] || RUNE_ALIASES[low.normalize('NFD').replace(/[\u0300-\u036f]/g,'')] || name;
-}
-
-async function enrichRunes(runes={}) {
-  const dd = await getDDragon();
-  const mapRune = (name) => {
-    const nm = normalizeAliasName(name || '');
-    const r = dd.runeByName[nm.toLowerCase()];
-    return r ? { name: r.name, icon: r.icon } : { name: nm, icon: '' };
-  };
-  const primary = [runes.key, runes.r1, runes.r2, runes.r3].filter(Boolean).map(mapRune);
-  const secondary = [runes.s1, runes.s2].filter(Boolean).map(mapRune);
-  const shards = (runes.sh || []).slice(0,3).map(s => ({ name: normalizeAliasName(s), icon: '' }));
+function teamNeeds(allies=[]){
+  const engage = allies.reduce((s,k)=>s+getTag(k,'engage'),0);
+  const peel = allies.reduce((s,k)=>s+getTag(k,'peel'),0);
+  const scaling = allies.reduce((s,k)=>s+getTag(k,'scaling'),0);
+  const lanePrio = allies.reduce((s,k)=>s+getTag(k,'lanePrio'),0);
+  const dmg = damageProfile(allies);
   return {
-    primaryTree: normalizeAliasName(runes.p || ''),
-    secondaryTree: normalizeAliasName(runes.s || ''),
-    primary,
-    secondary,
-    shards,
+    needsEngage: engage < 4,
+    needsPeel: peel < 3,
+    needsScaling: scaling < 4,
+    needsLanePrio: lanePrio < 4,
+    needsAP: dmg.ap <= dmg.ad,
+    needsAD: dmg.ad < dmg.ap
   };
 }
-
-async function enrichItems(items=[]) {
-  const dd = await getDDragon();
-  return items.filter(Boolean).map(it => {
-    const key = normalizeAliasName(it).toLowerCase();
-    const found = dd.itemByName[key];
-    return found ? { name: found.name, icon: found.icon } : { name: normalizeAliasName(it), icon: '' };
-  });
+function enemyShape(enemies=[]){
+  const engage = enemies.reduce((s,k)=>s+getTag(k,'engage'),0);
+  const antiDive = enemies.reduce((s,k)=>s+getTag(k,'antiDive'),0);
+  const scaling = enemies.reduce((s,k)=>s+getTag(k,'scaling'),0);
+  return { engage, antiDive, scaling };
 }
 
-async function enrichSpells(spells=[]) {
-  const dd = await getDDragon();
-  return spells.filter(Boolean).map(sp => {
-    const key = normalizeAliasName(sp).toLowerCase();
-    const found = dd.spellByName[key];
-    return found ? { name: found.name, icon: found.icon } : { name: normalizeAliasName(sp), icon: '' };
-  });
+function calcMatchupScore(champ, enemies=[]){
+  const vals = enemies.map(e => D[champ]?.vs?.[e] ?? 50);
+  return avg(vals, 50);
 }
-
-function calcSynergyBonus(champKey, allies) {
-  const champData = D[champKey];
-  if (!champData?.syn) return 0;
-  let bonus = 0;
-  for (const ally of allies) {
-    const allyKey = normalizeName(ally);
-    if (champData.syn[allyKey]) bonus += champData.syn[allyKey];
-    const allyData = D[allyKey];
-    if (allyData?.syn?.[champKey]) bonus += allyData.syn[champKey];
-  }
-  return Math.min(bonus, 10);
+function calcSynergyScore(champ, allies=[]){
+  const vals = allies.map(a => D[champ]?.syn?.[a] ?? 0);
+  const raw = vals.reduce((s,v)=>s+v,0);
+  return clamp(50 + raw * 6, 0, 100);
 }
-
-function calcMatchupScore(champKey, enemyKeys) {
-  const champData = D[champKey];
-  if (!champData?.vs || enemyKeys.length === 0) return { avg: 50, worst: 50 };
-  const wrs = enemyKeys.map(ek => champData.vs[ek] || champData.vs[Object.keys(champData.vs).find(k => normalizeName(k) === ek)] || 50);
-  return { avg: wrs.reduce((a,b) => a+b, 0)/wrs.length, worst: Math.min(...wrs) };
+function calcTeamCompFit(champ, allies=[]){
+  const need = teamNeeds(allies);
+  let score = 50;
+  if (need.needsEngage) score += getTag(champ,'engage') * 8;
+  if (need.needsPeel) score += getTag(champ,'peel') * 6;
+  if (need.needsScaling) score += getTag(champ,'scaling') * 5;
+  if (need.needsLanePrio) score += getTag(champ,'lanePrio') * 5;
+  if (need.needsAP) score += (D[champ]?.damage?.ap || 0) * 8;
+  if (need.needsAD) score += (D[champ]?.damage?.ad || 0) * 8;
+  return clamp(score, 0, 100);
 }
-
-const COMP_REGEX = {
-  tank: /malphite|ornn|sion|maokai|zac|rammus|sejuani|nautilus|leona|alistar|amumu|ksante|drmundo/,
-  burst: /zed|talon|fizz|leblanc|syndra|annie|veigar|rengar|khazix|akali|qiyana/,
-  cc: /malzahar|leona|nautilus|thresh|morgana|amumu|sejuani|alistar|lissandra|veigar/
-};
-function getEnemyTags(enemies='') {
-  const e = enemies.toLowerCase();
-  return Object.entries(COMP_REGEX).filter(([,r]) => r.test(e)).map(([k]) => k);
+function calcDamageFit(champ, allies=[]){
+  const dmg = damageProfile(allies);
+  const ap = D[champ]?.damage?.ap || 0;
+  const ad = D[champ]?.damage?.ad || 0;
+  let score = 50;
+  if (dmg.ad > dmg.ap) score += ap * 10;
+  if (dmg.ap > dmg.ad) score += ad * 10;
+  if (dmg.ap === 0 && dmg.ad === 0) score += ap >= ad ? 10 : 10;
+  return clamp(score,0,100);
 }
-function calcCompBonus(champKey, enemies='') {
-  const e = enemies.toLowerCase();
-  let bonus = 0;
-  if (COMP_REGEX.burst.test(e) && ['lissandra','galio','malzahar','vex'].includes(champKey)) bonus += 4;
-  if (COMP_REGEX.tank.test(e) && ['vayne','cassiopeia','karthus','fiora','darius'].includes(champKey)) bonus += 4;
-  if (COMP_REGEX.cc.test(e) && ['olaf','gangplank','milio','janna'].includes(champKey)) bonus += 3;
-  return bonus;
+function calcEngageFit(champ, allies=[], enemies=[]){
+  const need = teamNeeds(allies);
+  const enemy = enemyShape(enemies);
+  let score = 50;
+  if (need.needsEngage) score += getTag(champ,'engage') * 7;
+  if (enemy.engage >= 6) score += getTag(champ,'antiDive') * 8 + getTag(champ,'peel') * 4;
+  if (enemy.antiDive >= 5) score += getTag(champ,'poke') * 4;
+  return clamp(score,0,100);
 }
-
-function calcularMelhorPick({ role='', allies='', enemies='', bans='' }) {
-  const lane = ({ top:'top', jungle:'jungle', mid:'mid', adc:'adc', bot:'adc', sup:'support', support:'support', suporte:'support' })[String(role).toLowerCase()] || 'mid';
-  const pools = {
-    top:['aatrox','camille','darius','fiora','gwen','jax','kennen','ksante','malphite','ornn','rumble','shen'],
-    jungle:['amumu','diana','elise','graves','hecarim','jarvaniv','khazix','leesin','lillia','nocturne','sejuani','viego','zac'],
-    mid:['ahri','akali','akshan','anivia','annie','azir','cassiopeia','fizz','galio','hwei','katarina','leblanc','lissandra','lux','malzahar','orianna','syndra','vex','viktor','yasuo','yone','zed'],
-    adc:['aphelios','ashe','caitlyn','draven','ezreal','jhin','jinx','kaisa','lucian','samira','smolder','varus','xayah','zeri'],
-    support:['alistar','bard','blitzcrank','braum','janna','karma','leona','lulu','milio','morgana','nami','nautilus','pyke','rakan','rell','thresh','yuumi','zyra']
-  };
-  const pool = pools[lane] || pools.mid;
-  const enemyKeys = parseList(enemies).map(normalizeName);
-  const allyKeys = parseList(allies).map(normalizeName);
-  const banKeys = parseList(bans).map(normalizeName);
-  return pool.filter(ch => !banKeys.includes(ch) && D[ch]).map(champKey => {
-    const { avg, worst } = calcMatchupScore(champKey, enemyKeys);
-    const synergy = calcSynergyBonus(champKey, allyKeys);
-    const compBonus = calcCompBonus(champKey, enemies);
-    const score = Math.round((avg * 0.7 + worst * 0.3 + synergy + compBonus) * 10) / 10;
-    return { champKey, champ: D[champKey]?.label || champKey.charAt(0).toUpperCase()+champKey.slice(1), role: lane, avgWR: Math.round(avg), worstWR: Math.round(worst), synergy, compBonus, score, data: D[champKey] };
-  }).sort((a,b) => b.score - a.score).slice(0,3);
+function calcLanePriorityScore(champ){
+  return clamp(40 + getTag(champ,'lanePrio') * 15 + getTag(champ,'roam') * 5, 0, 100);
 }
-
-function buildReason(tag) {
-  return tag === 'tank' ? 'Anti-tank adaptation' : tag === 'burst' ? 'Anti-burst safety' : tag === 'cc' ? 'Anti-CC / Tenacity' : 'Balanced adaptation';
+function calcComfortScore(champ, profile={comfort:{}}){
+  const raw = profile.comfort?.[champ] || 0;
+  return clamp(40 + Math.log10(raw + 1) * 20, 0, 100);
 }
-
-function uniqueItems(list) {
-  const seen = new Set();
-  return list.filter(x => {
-    const k = normalizeAliasName(x).toLowerCase();
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+function calcMetaConfidence(champ){
+  const hasVs = Object.keys(D[champ]?.vs || {}).length;
+  const hasSyn = Object.keys(D[champ]?.syn || {}).length;
+  const hasRunes = D[champ]?.runes?.key ? 1 : 0;
+  const hasBuild = Array.isArray(D[champ]?.build) ? D[champ].build.length : 0;
+  return clamp(35 + hasVs*2 + hasSyn*2 + hasRunes*12 + hasBuild*3, 0, 100);
 }
-
-function createAlternativeBuilds(data, enemies='') {
-  const base = [...(data.build || [])];
-  const tags = getEnemyTags(enemies);
-  const out = [];
-  if (tags.includes('tank')) {
-    out.push({ key:'anti-tank', title:'Alternative A', badge:'ANTI-TANK', reason: buildReason('tank'), items: uniqueItems([...base.slice(0,2), 'Void Staff', ...base.slice(2)]).slice(0,6) });
-  }
-  if (tags.includes('burst')) {
-    out.push({ key:'anti-burst', title:'Alternative B', badge:'ANTI-BURST', reason: buildReason('burst'), items: uniqueItems([...base.slice(0,1), 'Zhonya\'s Hourglass', ...base.slice(1)]).slice(0,6) });
-  }
-  if (tags.includes('cc') && out.length < 2) {
-    out.push({ key:'anti-cc', title: out.length ? 'Alternative B' : 'Alternative A', badge:'ANTI-CC', reason: buildReason('cc'), items: uniqueItems([...base.slice(0,2), 'Banshee\'s Veil', ...base.slice(2)]).slice(0,6) });
-  }
-  while (out.length < 2) {
-    out.push({ key:`alt-${out.length}`, title: out.length ? 'Alternative B' : 'Alternative A', badge:'BALANCED', reason:'Balanced alternative', items: uniqueItems([...base.slice(0,3).reverse(), ...base.slice(3)]).slice(0,6) });
-  }
-  return out.slice(0,2);
+function calcRiskPenalty(champ, enemies=[]){
+  let risk = 0;
+  risk += getTag(champ,'execution') * 6;
+  risk -= getProfile(champ,'safe') * 3;
+  if (enemies.length >= 4 && getProfile(champ,'blind') <= 1) risk += 5;
+  return clamp(risk, 0, 30);
 }
-
-async function resolveBuildRunes(champion='', role='', enemies='', allies='') {
-  const key = getChampKey(champion);
-  const data = D[key];
-  if (!data) return null;
-  const patch = await getPatch();
-  const champAsset = await resolveChampionAsset(champion || key);
-  const runes = await enrichRunes(data.runes || {});
-  const spells = await enrichSpells(data.f || []);
-  const items = await enrichItems((data.build || []).slice(0, data.role === 'adc' ? 7 : 6));
-  const alternativesRaw = createAlternativeBuilds(data, enemies);
-  const alternatives = [];
-  for (const alt of alternativesRaw) {
-    alternatives.push({ ...alt, items: await enrichItems(alt.items) });
-  }
-  const tags = getEnemyTags(enemies);
+function computeConfidence(metrics, ctx){
+  let conf = metrics.meta*0.25 + metrics.matchup*0.25 + metrics.synergy*0.2 + metrics.comp*0.2 + metrics.comfort*0.1;
+  if (ctx.enemies.length < 2) conf -= 10;
+  if (ctx.allies.length < 2) conf -= 5;
+  if (metrics.comfort > 70) conf += 5;
+  if (metrics.matchup > 70) conf += 5;
+  if (ctx.enemies.length < 1) conf -= 10;
+  return clamp(conf, 0, 100);
+}
+function categoryScores(champ, metrics){
   return {
-    champion: champAsset.name || champion,
-    championKey: key,
-    role: data.role || role || '',
-    cls: data.cls || '',
-    championIcon: champAsset.square,
-    source: RIOT_KEY ? 'Riot + Data Dragon + Draft similarity' : 'Data Dragon + Draft similarity',
-    patch,
-    tags,
-    spells,
-    starter: data.ini || '',
-    runes,
-    items,
-    notes: data.d || [],
-    alternatives,
+    blind: clamp(metrics.comp*0.3 + metrics.meta*0.2 + metrics.riskInverse*0.3 + metrics.lanePrio*0.2, 0, 100),
+    punish: clamp(metrics.matchup*0.45 + metrics.pick*0.2 + metrics.synergy*0.15 + metrics.lanePrio*0.2, 0, 100),
+    comfort: clamp(metrics.comfort*0.5 + metrics.matchup*0.2 + metrics.meta*0.15 + metrics.riskInverse*0.15, 0, 100),
+    compFit: clamp(metrics.comp*0.4 + metrics.damageFit*0.2 + metrics.engageFit*0.2 + metrics.synergy*0.2, 0, 100)
+  };
+}
+function whyReasons(champ, metrics, ctx){
+  const out=[];
+  if (metrics.matchup >= 55) out.push(`Matchup favorável contra draft revelado (${Math.round(metrics.matchup)})`);
+  if (metrics.synergy >= 58) out.push(`Sinergia forte com aliados (${Math.round(metrics.synergy)})`);
+  if (metrics.comp >= 58) out.push('Corrige necessidades da composição aliada');
+  if (metrics.damageFit >= 58) out.push('Melhora o perfil de dano do time');
+  if (metrics.engageFit >= 58) out.push('Se encaixa bem no padrão de engage/disengage');
+  if (!out.length) out.push('Pick estável para o estado atual do draft');
+  return out.slice(0,3);
+}
+function riskText(champ, metrics){
+  if (metrics.risk >= 20) return 'Alto risco de execução e punição em blind.';
+  if (metrics.risk >= 12) return 'Risco moderado: precisa de disciplina em tempo de engage.';
+  return 'Baixo risco relativo para o draft atual.';
+}
+function plan10(champ, metrics){
+  const tips = D[champ]?.d || [];
+  const base = tips[0] || 'Jogue pelos primeiros objetivos com disciplina de wave.';
+  if (metrics.lanePrio >= 65) return `${base} Priorize pressão de lane e primeiro movimento para rio.`;
+  if (metrics.matchup < 48) return `${base} Respeite prioridade inimiga e jogue por reset/visão.`;
+  return `${base} Procure skirmishes só com informação e tempo de wave.`;
+}
+
+function scoreCandidate(champ, ctx){
+  const matchup = calcMatchupScore(champ, ctx.enemies);
+  const synergy = calcSynergyScore(champ, ctx.allies);
+  const comp = calcTeamCompFit(champ, ctx.allies);
+  const damageFit = calcDamageFit(champ, ctx.allies);
+  const engageFit = calcEngageFit(champ, ctx.allies, ctx.enemies);
+  const lanePrio = calcLanePriorityScore(champ);
+  const comfort = calcComfortScore(champ, ctx.playerProfile);
+  const meta = calcMetaConfidence(champ);
+  const risk = calcRiskPenalty(champ, ctx.enemies);
+  const riskInverse = 100 - risk * 3;
+  const pick = clamp(40 + getTag(champ,'pick')*15, 0, 100);
+
+  const weights = ctx.queueMode === 'competitive'
+    ? { matchup:0.20, synergy:0.20, comp:0.25, damageFit:0.10, engageFit:0.10, lanePrio:0.10, comfort:0.05, meta:0.05 }
+    : { matchup:0.35, synergy:0.10, comp:0.10, damageFit:0.05, engageFit:0.05, lanePrio:0.15, comfort:0.20, meta:0.10 };
+
+  const score =
+    matchup*weights.matchup +
+    synergy*weights.synergy +
+    comp*weights.comp +
+    damageFit*weights.damageFit +
+    engageFit*weights.engageFit +
+    lanePrio*weights.lanePrio +
+    comfort*weights.comfort +
+    meta*weights.meta - risk;
+
+  const metrics = { matchup, synergy, comp, damageFit, engageFit, lanePrio, comfort, meta, risk, riskInverse, pick };
+  const conf = computeConfidence(metrics, ctx);
+  const cats = categoryScores(champ, metrics);
+
+  const labels = [];
+  if (cats.blind >= 65) labels.push('Blind');
+  if (cats.punish >= 65) labels.push('Punish');
+  if (cats.comfort >= 65) labels.push('Comfort');
+  if (cats.compFit >= 65) labels.push('Comp Fit');
+
+  return {
+    champKey: champ,
+    champ: D[champ]?.name || champ,
+    role: D[champ]?.role || ctx.role,
+    score: Math.round(score),
+    confidence: Math.round(conf),
+    avgWR: Math.round(matchup),
+    worstWR: Math.round(matchup),
+    labels,
+    reasons: whyReasons(champ, metrics, ctx),
+    risk: riskText(champ, metrics),
+    plan10: plan10(champ, metrics),
+    breakdown: {
+      matchup: Math.round(matchup),
+      synergy: Math.round(synergy),
+      comp: Math.round(comp),
+      damageFit: Math.round(damageFit),
+      engageFit: Math.round(engageFit),
+      lanePrio: Math.round(lanePrio),
+      comfort: Math.round(comfort),
+      meta: Math.round(meta),
+      risk: -Math.round(risk)
+    },
+    categoryScores: Object.fromEntries(Object.entries(cats).map(([k,v])=>[k, Math.round(v)]))
   };
 }
 
-function recByMinute(min=0, enemies='') {
-  const tags = getEnemyTags(enemies);
-  if (min < 2) return { acao:'Lane with discipline', urgencia:'baixa', detalhes:'Minute 0: use waves and vision before fighting.' };
-  if (min < 6) return { acao:'Track jungle and prio lane', urgencia:'media', detalhes:'Early game: get lane priority before contesting river.' };
-  if (min < 14) return { acao:'Play around dragon setup', urgencia:'media', detalhes:'Mid-early game: establish vision and move first to objective.' };
-  if (min < 22) return { acao:'Group for side objective', urgencia:'alta', detalhes:'Mid game: convert prio into dragon, herald or towers.' };
-  const suffix = tags.includes('burst') ? ' Respect fog of war and hold defensive cooldowns.' : '';
-  return { acao:'Play around vision and picks', urgencia:'alta', detalhes:'Late game: one mistake decides the map.' + suffix };
+function filterCandidates(ctx){
+  return Object.keys(D).filter(k => D[k].role === ctx.role && !ctx.bans.includes(k));
+}
+function topBy(results, key){
+  return [...results].sort((a,b)=>b.categoryScores[key]-a.categoryScores[key]).slice(0,3);
+}
+function buildPayloadForChamp(champKey){
+  const c = D[champKey];
+  if (!c) return null;
+  return {
+    champion: c.name,
+    role: c.role,
+    cls: c.cls,
+    spells: c.f || [],
+    starter: c.ini || '',
+    runes: c.runes || {},
+    build: c.build || [],
+    notes: c.d || []
+  };
 }
 
 app.use(express.static(__dirname));
+app.get('/', (req,res)=>res.sendFile(path.join(__dirname, 'nexus-oracle-live.html')));
+app.get('/index.html', (req,res)=>res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/status', (req,res)=>res.json({ ok:true, mode:'deterministic-dataset', liveClient: !!LIVE_AGENT }));
+app.get('/champions', (req,res)=>res.json(Object.keys(D).map(k=>D[k].name).sort()));
 
-app.get('/', async (req, res) => {
-  const accept = req.headers.accept || '';
-  if (accept.includes('text/html')) return res.sendFile(path.join(__dirname, 'nexus-oracle-live.html'));
-  const patch = await getPatch();
-  res.json({ status:'Nexus Oracle UI Alt online', patch, riot_api: RIOT_KEY ? 'configurada' : 'não configurada', dataset:`${CHAMP_COUNT} champions` });
-});
-
-app.get('/status', async (req, res) => {
-  const patch = await getPatch();
-  res.json({ status:'ok', patch, riot_api: !!RIOT_KEY, dataset: CHAMP_COUNT });
-});
-
-app.post('/pick-data', async (req, res) => {
-  try {
-    const { context = {} } = req.body || {};
-    const { role='', allies='', enemies='', bans='', champion='' } = context;
-    const picks = calcularMelhorPick({ role, allies, enemies, bans });
-    const picksFull = [];
-    for (const p of picks) {
-      const asset = await resolveChampionAsset(p.champKey);
-      picksFull.push({ ...p, championIcon: asset.square, tags: getEnemyTags(enemies) });
+app.post('/analyze', (req,res)=>{
+  const ctx = validateContext(req.body || {});
+  const candidates = filterCandidates(ctx);
+  const scored = candidates.map(ch=>scoreCandidate(ch, ctx)).sort((a,b)=>b.score-a.score);
+  const picks = scored.slice(0,3);
+  const categories = {
+    blind: topBy(scored,'blind'),
+    punish: topBy(scored,'punish'),
+    comfort: topBy(scored,'comfort'),
+    compFit: topBy(scored,'compFit')
+  };
+  const selected = req.body?.selectedPick ? champKey(req.body.selectedPick) : picks[0]?.champKey;
+  res.json({
+    ctx,
+    picks,
+    categories,
+    selectedBuild: buildPayloadForChamp(selected),
+    recommendation: {
+      urgency: picks[0]?.confidence >= 70 ? 'media' : 'baixa',
+      action: picks[0] ? `Lock ${picks[0].champ} com confiança` : 'Complete o draft',
+      details: picks[0]?.plan10 || 'Revele mais picks para aumentar a confiança.'
     }
-    const build = champion ? await resolveBuildRunes(champion, role, enemies, allies) : (picks[0] ? await resolveBuildRunes(picks[0].champKey, role, enemies, allies) : null);
-    res.json({ picks: picksFull, build });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  });
 });
 
-app.post('/analyze', async (req, res) => {
-  try {
-    const { context = {}, gameTime = 0 } = req.body || {};
-    const { role='', allies='', enemies='', bans='', champion='' } = context;
-    const picks = calcularMelhorPick({ role, allies, enemies, bans });
-    const picksFull = [];
-    for (const p of picks) {
-      const asset = await resolveChampionAsset(p.champKey);
-      picksFull.push({ ...p, championIcon: asset.square, tags: getEnemyTags(enemies) });
-    }
-    const build = champion ? await resolveBuildRunes(champion, role, enemies, allies) : (picks[0] ? await resolveBuildRunes(picks[0].champKey, role, enemies, allies) : null);
-    const rec = recByMinute(Number(gameTime)||0, enemies);
-    const observations = [
-      picksFull[0] ? `Melhor pick: ${picksFull[0].champ} (${picksFull[0].avgWR}% WR)` : null,
-      build ? `Origem build/runa: ${build.source}` : null,
-      getEnemyTags(enemies).length ? `Leitura da comp: ${getEnemyTags(enemies).join(', ')}` : 'Sem live client. Usando contexto manual.'
-    ].filter(Boolean);
-    res.json({ ...rec, observacoes: observations, picks: picksFull, build, patch: await getPatch() });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-const port = 3000;
-app.listen(port, async () => {
-  console.log(`Servidor na porta ${port}`);
-  console.log(`Nexus Oracle UI Alt | patch ${await getPatch()} | dataset ${CHAMP_COUNT}`);
-});
+app.listen(3000, ()=>console.log('Nexus Oracle rodando em http://localhost:3000'));
