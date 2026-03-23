@@ -3,143 +3,169 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nexus Oracle LCK Pro</title>
+<title>Nexus Oracle · UI Alt</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0b1018;--bg2:#111827;--card:#131d2c;--card2:#182334;--line:#243247;--text:#e5edf7;--muted:#9cb0c9;--gold:#d4b46a;--blue:#5cc8ff;--green:#54d38a;--red:#ff6b6b;--shadow:0 12px 30px rgba(0,0,0,.35)}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#08101c,#0b1018 40%,#0d1320);color:var(--text);font-family:Inter,Segoe UI,Arial,sans-serif}
-header{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,16,24,.95);backdrop-filter:blur(6px);z-index:5}
-.brand h1{margin:0;font-size:18px;color:var(--gold)}.brand p{margin:2px 0 0;color:var(--muted);font-size:12px}
-.status{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.pill{padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:var(--card);font-size:12px;color:var(--muted)}
-.wrap{display:grid;grid-template-columns:360px 1fr;gap:16px;padding:16px;max-width:1600px;margin:0 auto}.side,.main{display:flex;flex-direction:column;gap:16px}
-.panel{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}
-.panel h2{margin:0;padding:14px 16px;border-bottom:1px solid var(--line);font-size:14px;letter-spacing:.04em;color:var(--gold);text-transform:uppercase}
-.body{padding:16px}.grid{display:grid;gap:10px}.grid.two{grid-template-columns:1fr 1fr}
-label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em}input,select,button{font:inherit}
-input,select{width:100%;background:#0c1523;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:11px 12px;outline:none}input:focus,select:focus{border-color:var(--blue)}
-button{border:none;border-radius:12px;padding:11px 14px;background:#16324e;color:#fff;cursor:pointer;font-weight:700}button.secondary{background:#223042}button:disabled{opacity:.55;cursor:not-allowed}
-.preview{aspect-ratio:16/9;background:#04080e;border-radius:14px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);overflow:hidden;position:relative}.preview video{width:100%;height:100%;object-fit:cover}
-.small{font-size:12px;color:var(--muted)}
-.rec{display:flex;flex-direction:column;gap:10px}.rec-main{font-size:28px;font-weight:900;color:var(--gold);line-height:1.05}.urg{font-size:12px;padding:4px 8px;border-radius:999px;display:inline-block}.urg.baixa{background:rgba(84,211,138,.12);color:var(--green)}.urg.media{background:rgba(212,180,106,.12);color:var(--gold)}.urg.alta{background:rgba(255,107,107,.12);color:var(--red)}
-.obs{display:grid;gap:8px}.obs div{padding:10px 12px;border-radius:12px;background:#0d1626;border:1px solid var(--line);font-size:13px;color:var(--muted)}
-.picks{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:12px}.pick{border:1px solid var(--line);background:#0d1626;border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:10px;cursor:pointer;transition:.2s}.pick:hover{transform:translateY(-2px);border-color:#35516f}.pick.top1{box-shadow:0 0 0 1px rgba(212,180,106,.25) inset}.pick-head{display:flex;gap:10px;align-items:center}.pick img{width:56px;height:56px;border-radius:14px;object-fit:cover;border:1px solid var(--line);background:#111}.pick .name{font-size:20px;font-weight:800}.pick .meta{font-size:12px;color:var(--muted)}.pick .score{margin-left:auto;text-align:right}.pick .score b{display:block;font-size:24px;color:var(--blue)}
-.metrics{display:grid;gap:6px}.metric{display:grid;grid-template-columns:70px 1fr 42px;gap:8px;align-items:center;font-size:11px;color:var(--muted)}.bar{height:6px;border-radius:999px;background:#0a111b;overflow:hidden}.bar>span{display:block;height:100%;background:linear-gradient(90deg,var(--blue),#8ee1ff)}
-.buildTop{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.champBadge{display:flex;gap:12px;align-items:center}.champBadge img{width:68px;height:68px;border-radius:16px;border:1px solid var(--line);background:#111}.champBadge .title{font-size:22px;font-weight:900}.champBadge .sub{font-size:12px;color:var(--muted)}
-.iconRow,.itemGrid,.runeCols{display:grid;gap:10px}.iconRow{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}.iconChip{display:flex;gap:10px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:14px;background:#0d1626}.iconChip img{width:38px;height:38px;border-radius:10px;background:#101522;border:1px solid var(--line)}.iconChip span{font-size:12px}.sectionTitle{margin:10px 0 8px;font-size:12px;color:var(--gold);text-transform:uppercase;letter-spacing:.06em}
-.runeCols{grid-template-columns:2fr 1fr 1fr}.runePanel{border:1px solid var(--line);border-radius:16px;padding:12px;background:#0d1626}.runePanel h3{margin:0 0 8px;font-size:12px;color:var(--muted);text-transform:uppercase}.runeList{display:grid;gap:8px}.runeItem{display:flex;gap:10px;align-items:center;padding:8px;border-radius:12px;background:#101a29;border:1px solid #1f2b3d}.runeItem img{width:34px;height:34px;object-fit:contain}.runeItem .rname{font-size:13px;font-weight:700}.runeItem .rsub{font-size:11px;color:var(--muted)}
-.itemGrid{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}.item{display:flex;gap:10px;align-items:center;padding:10px;border-radius:14px;background:#0d1626;border:1px solid var(--line)}.item img{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:#111}.item .inum{font-size:11px;color:var(--muted)}.item .iname{font-size:13px;font-weight:700}
-.notes{display:grid;gap:8px}.notes div{padding:10px 12px;background:#0d1626;border:1px solid var(--line);border-radius:12px;font-size:13px;color:var(--muted)}
-.chat{display:grid;gap:8px}.chatlog{max-height:220px;overflow:auto;display:grid;gap:8px}.bubble{padding:10px 12px;border-radius:12px;background:#0d1626;border:1px solid var(--line);font-size:13px;line-height:1.5}.bubble.user{background:#10253b}
-footer{padding:10px 18px 20px;color:var(--muted);font-size:12px;text-align:center}
-@media (max-width:1100px){.wrap{grid-template-columns:1fr}.picks{grid-template-columns:1fr}.runeCols{grid-template-columns:1fr}.grid.two{grid-template-columns:1fr 1fr}}
-@media (max-width:720px){header,.wrap{padding:12px}.grid.two{grid-template-columns:1fr}.buildTop{align-items:flex-start}.champBadge .title{font-size:18px}}
+:root{--bg:#07101d;--panel:#0b1830;--panel2:#0d1e3c;--line:#203a63;--gold:#d9b46b;--gold2:#f2d084;--txt:#d7e3ff;--muted:#8ca3c8;--accent:#50c7ff;--green:#58d68d;--amber:#f4c542;--red:#f26b6b}
+*{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#07101d,#09162b 40%,#07101d);color:var(--txt);font-family:Rajdhani,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);background:rgba(6,12,24,.95);position:sticky;top:0;z-index:5}
+.brand{display:flex;gap:10px;align-items:center}.gem{width:22px;height:22px;background:linear-gradient(135deg,#d9b46b,#f2d084);clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%)}
+.brand h1{margin:0;font-family:Cinzel,serif;font-size:16px;color:var(--gold2)} .brand p{margin:0;font-size:11px;color:var(--muted)}
+.server{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.server input,.ctx input,.ctx select{background:#081427;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:10px 12px;font:inherit}
+.btn{background:#10284a;border:1px solid #285086;color:var(--gold2);border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+.main{display:grid;grid-template-columns:1.15fr .95fr;min-height:calc(100vh - 70px)}
+.left,.right{padding:16px;display:flex;flex-direction:column;gap:14px}.panel{background:linear-gradient(180deg,#0b1830,#0a1630);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.2)}
+.panel h2{margin:0;padding:14px 16px;color:var(--gold2);font-family:Cinzel,serif;font-size:14px;border-bottom:1px solid var(--line)}
+.capture{position:relative;aspect-ratio:16/9;background:#000}.capture video{width:100%;height:100%;object-fit:cover;opacity:.7}.overlay{position:absolute;inset:0;display:grid;place-items:center;background:rgba(4,8,16,.55);text-align:center;color:var(--gold2)}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-top:1px solid var(--line)}
+.controls select{background:#081427;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:8px 10px}
+.rec{padding:16px}.recbox{background:#081427;border:1px solid var(--line);border-radius:14px;padding:16px}.rec-title{font-size:11px;color:var(--gold2);letter-spacing:.08em;text-transform:uppercase}.rec-action{font-size:28px;font-weight:700;margin:6px 0 8px}.urg-low{color:var(--green)}.urg-med{color:var(--amber)}.urg-high{color:var(--red)}
+.obs{margin-top:10px;display:grid;gap:6px;color:var(--muted)}
+.ctx{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:16px}.ctx .full{grid-column:1/-1}.ctx label{display:grid;gap:6px;font-size:12px;color:var(--gold2)}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:16px}.pick-card{background:#081427;border:1px solid var(--line);border-radius:14px;padding:12px;display:grid;gap:8px}.pick-top{display:flex;gap:10px;align-items:center}.pick-top img{width:46px;height:46px;border-radius:10px;border:1px solid #355d93}.pick-name{font-size:22px;font-weight:700}.pick-sub{color:var(--muted);font-size:12px}.score{margin-left:auto;text-align:right}.score strong{font-size:30px;color:#66d6ff}.bar{height:7px;background:#0c203d;border-radius:999px;overflow:hidden}.bar>span{display:block;height:100%;background:linear-gradient(90deg,#5ed0ff,#9be4ff)}
+.build{padding:0}.build-head{padding:16px;border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:center}.build-head img{width:58px;height:58px;border-radius:12px;border:1px solid #355d93}.build-title{font-size:18px;font-weight:700}.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}.pill{background:#0a2140;border:1px solid #2a4f81;border-radius:999px;padding:4px 10px;color:var(--muted);font-size:12px}.pill.source{color:#b8e8ff}.pill.patch{color:#f2d084}
+.section{padding:14px 16px;border-top:1px solid var(--line)}.section h3{margin:0 0 10px;font-size:12px;color:var(--gold2);letter-spacing:.08em;text-transform:uppercase}.icons-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.spell,.starter,.rune-item,.item-row,.alt-card{background:#081427;border:1px solid var(--line);border-radius:12px;padding:10px}.spell{display:flex;align-items:center;gap:10px}.spell img,.rune-item img,.item-row img{width:38px;height:38px;border-radius:8px}.starter{color:var(--txt)}
+.runes-grid{display:grid;grid-template-columns:1.2fr .8fr .6fr;gap:10px}.col-title{font-size:12px;color:#9fc1ff;margin-bottom:8px;font-weight:700}.list{display:grid;gap:8px}.rune-item{display:flex;align-items:center;gap:10px}.rune-item .sub,.item-row .sub{font-size:11px;color:var(--muted)}
+.items-list{display:grid;gap:10px}.item-row{display:flex;align-items:center;gap:10px}.item-num{font-size:11px;color:var(--gold2);width:18px}.alt-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px}.alt-card h4{margin:0 0 8px;font-size:15px}.badge{display:inline-block;padding:3px 8px;border-radius:999px;border:1px solid #355d93;background:#0f2646;color:#ccecff;font-size:11px;margin-left:8px}.badge.tank{border-color:#5eb1ff;color:#5eb1ff}.badge.burst{border-color:#ff8e8e;color:#ff8e8e}.badge.cc{border-color:#ffd36b;color:#ffd36b}.badge.balanced{border-color:#8dd9a8;color:#8dd9a8}.notes{display:grid;gap:6px;color:var(--muted)}
+@media (max-width: 1180px){.main{grid-template-columns:1fr}.cards{grid-template-columns:1fr}.runes-grid,.alt-wrap,.icons-grid,.ctx{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header>
-  <div class="brand"><h1>Nexus Oracle · LCK Pro</h1><p>UI em português · build e runas em inglês atual</p></div>
-  <div class="status">
-    <input id="serverUrl" value="http://localhost:3000" style="width:260px;max-width:60vw">
-    <span class="pill" id="statusPill">Conectando…</span>
-    <span class="pill" id="livePill">Live Client: —</span>
-    <span class="pill" id="patchPill">Patch: —</span>
+  <div class="brand"><div class="gem"></div><div><h1>NEXUS ORACLE</h1><p>League of Legends · Coach UI</p></div></div>
+  <div class="server">
+    <input id="serverUrl" value="http://localhost:3000" style="min-width:260px">
+    <button class="btn" onclick="testConn()">Conectar</button>
+    <span id="patchPill" class="pill patch">conectando...</span>
   </div>
 </header>
-
-<div class="wrap">
-  <div class="side">
+<div class="main">
+  <div class="left">
     <div class="panel">
-      <h2>Captura</h2>
-      <div class="body grid">
-        <div class="preview" id="previewBox"><span>Compartilhe a janela do LoL</span><video id="video" autoplay muted playsinline style="display:none"></video></div>
-        <div class="grid two">
-          <button id="startBtn">Iniciar captura</button>
-          <button class="secondary" id="stopBtn" disabled>Parar</button>
-        </div>
-        <div class="grid two">
-          <div><label>Intervalo</label><select id="intervalSel"><option value="3000">3s</option><option value="5000">5s</option><option value="8000">8s</option></select></div>
-          <div><label>Modo</label><select id="modeSel"><option value="fast">Fast</option><option value="deep">Deep</option></select></div>
-        </div>
-        <div class="small" id="captureInfo">Usando Live Client quando disponível. A imagem fica como fallback/contexto.</div>
+      <h2>Captura ao vivo</h2>
+      <div class="capture">
+        <video id="previewVideo" autoplay muted playsinline></video>
+        <canvas id="captureCanvas" style="display:none"></canvas>
+        <div class="overlay" id="previewOver">Clique em <b>Iniciar captura</b><br>e escolha a janela do LoL.</div>
+      </div>
+      <div class="controls">
+        <button class="btn" id="btnStart" onclick="startCapture()">Iniciar captura</button>
+        <button class="btn" id="btnStop" onclick="stopCapture()" disabled>Parar</button>
+        <span style="color:var(--muted)">Atualizar</span>
+        <select id="intervalSel"><option value="3000" selected>3s</option><option value="5000">5s</option><option value="8000">8s</option></select>
+        <span id="lastTs" class="pill">—</span>
       </div>
     </div>
-    <div class="panel">
-      <h2>Contexto da partida</h2>
-      <div class="body grid">
-        <div><label>Campeão</label><input id="champion" placeholder="Ex: Ahri"></div>
-        <div class="grid two">
-          <div><label>Rota</label><select id="role"><option value="">Auto</option><option value="top">Top</option><option value="jungle">Jungle</option><option value="mid">Mid</option><option value="adc">ADC</option><option value="support">Support</option></select></div>
-          <div><label>Bans</label><input id="bans" placeholder="Zed, Lee Sin"></div>
-        </div>
-        <div><label>Aliados</label><input id="allies" placeholder="Malphite, Sejuani, Jinx"></div>
-        <div><label>Inimigos</label><input id="enemies" placeholder="Yasuo, Viego, Kai'Sa"></div>
-        <div class="grid two">
-          <button id="refreshBtn">Atualizar picks</button>
-          <button class="secondary" id="buildBtn">Atualizar build</button>
-        </div>
-      </div>
-    </div>
-    <div class="panel">
-      <h2>Coach</h2>
-      <div class="body chat">
-        <div class="chatlog" id="chatlog"></div>
-        <div class="grid two">
-          <input id="chatInput" placeholder="Ex: melhor build para este jogo?">
-          <button id="chatBtn">Perguntar</button>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="main">
     <div class="panel">
       <h2>Recomendação agora</h2>
-      <div class="body rec">
-        <span class="urg baixa" id="urg">baixa</span>
-        <div class="rec-main" id="acao">Aguardando análise…</div>
-        <div class="small" id="detalhes">Conecte o servidor e inicie a captura.</div>
-        <div class="obs" id="obs"></div>
+      <div class="rec" id="recArea"></div>
+    </div>
+  </div>
+  <div class="right">
+    <div class="panel">
+      <h2>Contexto da partida</h2>
+      <div class="ctx">
+        <label>Campeão<input id="champion" placeholder="Ahri, Jhin, Lee Sin"></label>
+        <label>Rota<select id="role"><option value="mid">Mid</option><option value="top">Top</option><option value="jungle">Jungle</option><option value="adc">ADC</option><option value="support">Support</option></select></label>
+        <label class="full">Aliados<input id="allies" placeholder="Lee Sin, Jinx, Lulu"></label>
+        <label class="full">Inimigos<input id="enemies" placeholder="Zed, Sejuani, Nautilus"></label>
+        <label class="full">Bans<input id="bans" placeholder="Yasuo, Ahri"></label>
+        <button class="btn" onclick="refreshData()">Atualizar dados</button>
       </div>
     </div>
-
     <div class="panel">
       <h2>Top 3 picks</h2>
-      <div class="body picks" id="picks"></div>
+      <div class="cards" id="topPicks"></div>
     </div>
-
-    <div class="panel">
+    <div class="panel build">
       <h2>Build / runes atuais</h2>
-      <div class="body" id="buildWrap">
-        <div class="small">Selecione um dos picks ou digite um campeão e clique em “Atualizar build”.</div>
-      </div>
+      <div id="buildPanel"></div>
     </div>
   </div>
 </div>
-<footer>Esta correção usa Riot Data Dragon para ícones/nomes atuais e Riot Match/Live Client quando disponíveis. Não inclui scraping multi-site nesta versão.</footer>
 <script>
-const S={server:'',stream:null,timer:null,video:null,lastPicks:[],selectedPick:null};
-const $=s=>document.querySelector(s);
-const norm=(n='')=>n.toLowerCase().replace(/[’'\s\-.]+/g,'');
-function getServer(){return ($('#serverUrl').value||'').trim().replace(/\/$/,'');}
-function ctx(){return {champion:$('#champion').value.trim(),role:$('#role').value,bans:$('#bans').value.trim(),allies:$('#allies').value.trim(),enemies:$('#enemies').value.trim()};}
-function addChat(text,user=false){const el=document.createElement('div');el.className='bubble'+(user?' user':'');el.textContent=text;$('#chatlog').appendChild(el);$('#chatlog').scrollTop=999999;}
-async function ping(){try{const r=await fetch(getServer()+'/status');const d=await r.json();$('#statusPill').textContent='Servidor online';$('#livePill').textContent='Live Client: '+(d.liveClient?'detectado':'não detectado');$('#patchPill').textContent='Patch: '+d.patch;S.server=getServer();}catch(e){$('#statusPill').textContent='Servidor offline';$('#livePill').textContent='Live Client: —';$('#patchPill').textContent='Patch: —';}}
+let stream=null, timer=null, analyzing=false;
+const video=document.getElementById('previewVideo');
+const canvas=document.getElementById('captureCanvas');
+const ctx=canvas.getContext('2d');
+const getServer=()=>document.getElementById('serverUrl').value.trim().replace(/\/$/,'');
+const getCtx=()=>({champion:champion.value.trim(), role:role.value, allies:allies.value.trim(), enemies:enemies.value.trim(), bans:bans.value.trim()});
 
-async function updatePicks(){ if(!S.server) await ping(); const r=await fetch(S.server+'/pick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ctx())}); const d=await r.json(); S.lastPicks=d.picks||[]; renderPicks(S.lastPicks); if(S.lastPicks[0]&&!$('#champion').value.trim()) renderBuild(S.lastPicks[0].data?{...S.lastPicks[0].data,champion:S.lastPicks[0].champ,championIcon:S.lastPicks[0].championIcon,role:S.lastPicks[0].role}:null); }
-async function updateBuild(){ const c=ctx(); if(!c.champion) return; if(!S.server) await ping(); const r=await fetch(S.server+'/resolve-build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)}); const d=await r.json(); renderBuild(d); }
+async function testConn(){
+  const r=await fetch(getServer()+'/status').catch(()=>null);
+  if(!r)return patchPill.textContent='offline';
+  const d=await r.json();
+  patchPill.textContent=`Patch ${d.patch} · ${d.riot_api?'Riot':'Local'}`;
+}
 
-function renderPicks(picks){ const box=$('#picks'); box.innerHTML=''; if(!picks.length){box.innerHTML='<div class="small">Preencha inimigos/aliados para calcular picks.</div>'; return;} picks.forEach((p,i)=>{ const el=document.createElement('div'); el.className='pick '+(i===0?'top1':''); const wrWidth=Math.max(10,Math.min(100,(p.avgWR||50)*1.6)); const synWidth=Math.max(4,Math.min(100,(p.synergy||0)*10)); const compWidth=Math.max(4,Math.min(100,(p.compBonus||0)*10)); el.innerHTML=`<div class="pick-head"><img src="${p.championIcon||''}" alt="${p.champ}"><div><div class="name">${p.champ}</div><div class="meta">#${i+1} · ${p.role||''}</div></div><div class="score"><b>${p.score}</b><div class="meta">WR ${p.avgWR}%</div></div></div><div class="metrics"><div class="metric"><span>WR médio</span><div class="bar"><span style="width:${wrWidth}%"></span></div><span>${p.avgWR}%</span></div><div class="metric"><span>Sinergia</span><div class="bar"><span style="width:${synWidth}%;background:linear-gradient(90deg,#54d38a,#9cf4be)"></span></div><span>+${p.synergy||0}</span></div><div class="metric"><span>vs Comp</span><div class="bar"><span style="width:${compWidth}%;background:linear-gradient(90deg,#d4b46a,#f1d89b)"></span></div><span>+${p.compBonus||0}</span></div></div>`; el.onclick=()=>renderBuild({...p.data,champion:p.champ,championIcon:p.championIcon,role:p.role}); box.appendChild(el); }); }
+function renderPicks(picks=[]){
+  topPicks.innerHTML = picks.map((p,i)=>`<div class="pick-card">
+    <div class="pick-top">
+      <img src="${p.championIcon||''}" alt="${p.champ}">
+      <div><div class="pick-name">${p.champ}</div><div class="pick-sub">#${i+1} · ${p.role}</div></div>
+      <div class="score"><strong>${p.score}</strong><div class="pick-sub">WR ${p.avgWR}%</div></div>
+    </div>
+    <div class="pick-sub">WR médio</div><div class="bar"><span style="width:${Math.max(8,Math.min(100,p.avgWR))}%"></span></div>
+    <div class="pick-sub">Sinergia +${p.synergy} · Vs comp +${p.compBonus}</div>
+  </div>`).join('') || '<div class="pick-card">Sem dados de picks.</div>';
+}
 
-function iconChip(icon,name,sub=''){ return `<div class="iconChip">${icon?`<img src="${icon}" alt="${name}">`:''}<div><div style="font-weight:700">${name}</div>${sub?`<span>${sub}</span>`:''}</div></div>`; }
-function renderRuneItems(list){ return (list||[]).map(r=>`<div class="runeItem">${r.icon?`<img src="${r.icon}" alt="${r.name}">`:''}<div><div class="rname">${r.name}</div><div class="rsub">Current patch rune</div></div></div>`).join(''); }
-function renderBuild(data){ const box=$('#buildWrap'); if(!data){box.innerHTML='<div class="small">Sem build para mostrar.</div>'; return;} const spells=(data.spells||[]).map(s=>iconChip(s.icon,s.name)).join(''); const items=(data.build||[]).map((it,idx)=>`<div class="item"><img src="${it.icon}" alt="${it.name}"><div><div class="inum">${idx+1}.</div><div class="iname">${it.name}</div></div></div>`).join(''); const primaryFull=(data.runes?.primary||[]); const secondary=(data.runes?.secondary||[]); const shards=(data.runes?.shards||[]); box.innerHTML=`<div class="buildTop"><div class="champBadge">${data.championIcon?`<img src="${data.championIcon}" alt="${data.champion}">`:''}<div><div class="title">${data.champion||''}</div><div class="sub">${data.role||''} · ${data.cls||''} · ${data.source||'build'}</div></div></div></div><div class="sectionTitle">Summoner spells</div><div class="iconRow">${spells||'<div class="small">—</div>'}</div><div class="sectionTitle">Starter</div><div class="notes"><div>${data.starter||'—'}</div></div><div class="sectionTitle">Runes</div><div class="runeCols"><div class="runePanel"><h3>Primary · ${data.runes?.primaryTree?.name||'—'} (${primaryFull.length}/4)</h3><div class="runeList">${renderRuneItems(primaryFull)}</div></div><div class="runePanel"><h3>Secondary · ${data.runes?.secondaryTree?.name||'—'} (${secondary.length}/2)</h3><div class="runeList">${renderRuneItems(secondary)}</div></div><div class="runePanel"><h3>Shards (3/3)</h3><div class="runeList">${shards.map(s=>`<div class="runeItem"><div><div class="rname">${s}</div><div class="rsub">Shard</div></div></div>`).join('')}</div></div></div><div class="sectionTitle">Build order (${(data.build||[]).length}/${data.cls==='adc'?7:6})</div><div class="itemGrid">${items}</div>${(data.notes||[]).length?`<div class="sectionTitle">Coach notes</div><div class="notes">${data.notes.map(n=>`<div>${n}</div>`).join('')}</div>`:''}`; }
+function badgeClass(b){const k=(b||'').toLowerCase(); if(k.includes('tank')) return 'tank'; if(k.includes('burst')) return 'burst'; if(k.includes('cc')) return 'cc'; return 'balanced';}
 
-async function analyze(){ if(!S.server) await ping(); const c=ctx(); const payload={context:c,gameTime:0,mode:$('#modeSel').value}; try{ const r=await fetch(S.server+'/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); $('#urg').className='urg '+(d.urgencia||'baixa'); $('#urg').textContent=d.urgencia||'baixa'; $('#acao').textContent=d.acao||'—'; $('#detalhes').textContent=d.detalhes||''; $('#obs').innerHTML=(d.observacoes||[]).map(o=>`<div>${o}</div>`).join(''); if(d.picks?.length){ const picks=d.picks.map(p=>({ champ:p.champ, championIcon:p.buildInfo?.championIcon || p.championIcon || '', role:p.role, score:p.score, avgWR:p.avgWR, worstWR:p.worstWR, synergy:p.synergy, compBonus:p.compBonus, data:p.buildInfo ? { ...p.buildInfo, cls:p.buildInfo.cls } : { cls:'' } })); S.lastPicks=picks; renderPicks(picks); } if(d.currentBuild){ renderBuild(d.currentBuild); } $('#livePill').textContent='Live Client: '+(d.liveClient?'detectado':'não detectado'); } catch(e){ $('#detalhes').textContent='Erro na análise: '+e.message; } }
+function renderBuild(build){
+  if(!build){ buildPanel.innerHTML='<div class="section">Sem build disponível.</div>'; return; }
+  const spells = (build.spells||[]).map(s=>`<div class="spell"><img src="${s.icon||''}"><div><div>${s.name}</div></div></div>`).join('');
+  const primary = (build.runes?.primary||[]).map(r=>`<div class="rune-item"><img src="${r.icon||''}"><div><div>${r.name}</div><div class="sub">Current patch rune</div></div></div>`).join('');
+  const secondary = (build.runes?.secondary||[]).map(r=>`<div class="rune-item"><img src="${r.icon||''}"><div><div>${r.name}</div><div class="sub">Current patch rune</div></div></div>`).join('');
+  const shards = (build.runes?.shards||[]).map(r=>`<div class="rune-item"><div><div>${r.name}</div><div class="sub">Shard</div></div></div>`).join('');
+  const items = (build.items||[]).map((it,idx)=>`<div class="item-row"><div class="item-num">${idx+1}.</div><img src="${it.icon||''}"><div><div>${it.name}</div><div class="sub">Current patch item</div></div></div>`).join('');
+  const alts = (build.alternatives||[]).map(a=>`<div class="alt-card"><h4>${a.title}<span class="badge ${badgeClass(a.badge)}">${a.badge}</span></h4><div class="sub" style="color:var(--muted);margin-bottom:8px">${a.reason}</div>${a.items.map((it,idx)=>`<div class="item-row"><div class="item-num">${idx+1}.</div><img src="${it.icon||''}"><div><div>${it.name}</div></div></div>`).join('')}</div>`).join('');
+  const tags = (build.tags||[]).map(t=>`<span class="badge ${badgeClass(t)}">${t.toUpperCase()}</span>`).join('');
+  buildPanel.innerHTML = `
+  <div class="build-head"><img src="${build.championIcon||''}"><div><div class="build-title">${build.champion}</div><div style="color:var(--muted)">${build.role} · ${build.cls}</div><div class="meta"><span class="pill source">Origem: ${build.source}</span><span class="pill patch">Patch ${build.patch}</span>${tags}</div></div></div>
+  <div class="section"><h3>Summoner spells</h3><div class="icons-grid">${spells}</div></div>
+  <div class="section"><h3>Starter</h3><div class="starter">${build.starter||'—'}</div></div>
+  <div class="section"><h3>Runes</h3><div class="runes-grid"><div><div class="col-title">Primary · ${build.runes?.primaryTree||''} (${(build.runes?.primary||[]).length}/4)</div><div class="list">${primary}</div></div><div><div class="col-title">Secondary · ${build.runes?.secondaryTree||''} (${(build.runes?.secondary||[]).length}/2)</div><div class="list">${secondary}</div></div><div><div class="col-title">Shards (${(build.runes?.shards||[]).length}/3)</div><div class="list">${shards}</div></div></div></div>
+  <div class="section"><h3>Build order (${(build.items||[]).length}/${build.role==='adc'?7:6})</h3><div class="items-list">${items}</div></div>
+  <div class="section"><h3>Alternativas</h3><div class="alt-wrap">${alts}</div></div>
+  <div class="section"><h3>Coach notes</h3><div class="notes">${(build.notes||[]).map(x=>`<div>• ${x}</div>`).join('')}</div></div>`;
+}
 
-async function startCapture(){ try{ S.stream=await navigator.mediaDevices.getDisplayMedia({video:true,audio:false}); const v=$('#video'); v.srcObject=S.stream; v.style.display='block'; $('#previewBox').querySelector('span').style.display='none'; $('#startBtn').disabled=true; $('#stopBtn').disabled=false; const run=()=>{ analyze(); }; run(); S.timer=setInterval(run, parseInt($('#intervalSel').value,10)||3000); S.stream.getVideoTracks()[0].addEventListener('ended', stopCapture); }catch(e){ alert('Não foi possível iniciar captura: '+e.message); } }
-function stopCapture(){ if(S.timer) clearInterval(S.timer); S.timer=null; if(S.stream) S.stream.getTracks().forEach(t=>t.stop()); S.stream=null; $('#video').style.display='none'; $('#previewBox').querySelector('span').style.display='block'; $('#startBtn').disabled=false; $('#stopBtn').disabled=true; }
-async function ask(){ const q=$('#chatInput').value.trim(); if(!q) return; addChat(q,true); $('#chatInput').value=''; if(!S.server) await ping(); const r=await fetch(S.server+'/oracle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,context:ctx()})}); const d=await r.json(); addChat(d.text||'Sem resposta.'); if(d.picks_calculados?.length){ updatePicks(); } }
+function renderRec(d){
+  const cls=d.urgencia==='alta'?'urg-high':d.urgencia==='media'?'urg-med':'urg-low';
+  recArea.innerHTML=`<div class="recbox"><div class="rec-title">Recommendation now</div><div class="rec-action ${cls}">${d.acao||'—'}</div><div>${d.detalhes||''}</div><div class="obs">${(d.observacoes||[]).map(o=>`<div>• ${o}</div>`).join('')}</div></div>`;
+}
 
-$('#refreshBtn').onclick=updatePicks; $('#buildBtn').onclick=updateBuild; $('#startBtn').onclick=startCapture; $('#stopBtn').onclick=stopCapture; $('#chatBtn').onclick=ask; $('#chatInput').addEventListener('keydown',e=>{if(e.key==='Enter')ask();}); $('#serverUrl').addEventListener('change', ping);
-setInterval(ping, 10000); ping(); updatePicks();
+async function refreshData(){
+  const res = await fetch(getServer()+'/pick-data',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({context:getCtx()})});
+  const data = await res.json();
+  renderPicks(data.picks||[]); renderBuild(data.build||null);
+}
+
+async function startCapture(){
+  try{
+    stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:1},audio:false});
+    video.srcObject=stream; previewOver.style.display='none'; btnStart.disabled=true; btnStop.disabled=false;
+    stream.getVideoTracks()[0].addEventListener('ended', stopCapture);
+    await refreshData();
+    timer=setInterval(analyzeFrame, parseInt(intervalSel.value||'3000'));
+  }catch(e){}
+}
+function stopCapture(){ if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;} clearInterval(timer); timer=null; previewOver.style.display='grid'; btnStart.disabled=false; btnStop.disabled=true; }
+
+async function analyzeFrame(){
+  if(analyzing || !stream || !video.videoWidth) return; analyzing=true;
+  canvas.width=video.videoWidth; canvas.height=video.videoHeight; ctx.drawImage(video,0,0);
+  const image=(canvas.toDataURL('image/jpeg',0.5).split(',')[1]);
+  try{
+    const res = await fetch(getServer()+'/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image,context:getCtx(),gameTime:0})});
+    const data = await res.json();
+    renderRec(data); renderPicks(data.picks||[]); renderBuild(data.build||null); lastTs.textContent='Última análise: '+new Date().toLocaleTimeString('pt-BR');
+  }catch(e){ lastTs.textContent='Erro: '+e.message; }
+  analyzing=false;
+}
+
+testConn(); refreshData();
 </script>
 </body>
 </html>
