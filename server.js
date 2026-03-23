@@ -3,7 +3,7 @@ import cors from 'cors';
 import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { D, ALIASES, findChamp, CHAMP_COUNT } from '../dataset.js';
+import { D, ALIASES, findChamp, CHAMP_COUNT } from './dataset.js';
 
 const app = express();
 app.use(cors());
