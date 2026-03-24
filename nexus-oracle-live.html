@@ -22,7 +22,7 @@ button.secondary{background:#0a2140}
 .row{display:flex;justify-content:space-between;gap:10px}.list{display:grid;gap:8px}.small{font-size:12px;color:var(--muted)}
 .recbox,.box{background:#081427;border:1px solid var(--line);border-radius:12px;padding:12px}.section{padding:14px;border-top:1px solid var(--line)}
 .kv{display:grid;gap:8px}.kv .row b{color:var(--gold)}
-.good{color:var(--green)} .warn{color:var(--amber)} .bad{color:var(--red)}
+.error{color:#ff9b9b}
 </style>
 </head>
 <body>
@@ -30,13 +30,14 @@ button.secondary{background:#0a2140}
   <div><h1>Nexus Oracle</h1><div class="muted">Draft AI determinístico · Solo Queue / Competitive</div></div>
   <div class="muted" id="status">Conectando…</div>
 </header>
+
 <div style="padding:14px 14px 0 14px">
   <div id="onboardCard" class="panel">
     <h2>Onboarding rápido</h2>
     <div class="content grid2">
       <div class="box">
         <div style="font-size:20px;font-weight:700;color:var(--gold)">1 botão = me diga o pick</div>
-        <div class="small" style="margin-top:6px">Clique em <b>Me diga o pick</b>. O sistema tenta auto detectar o draft; se não conseguir, usa o contexto manual.</div>
+        <div class="small" style="margin-top:6px">Clique em <b>Me diga o pick</b>. O sistema usa o contexto manual com resposta rápida.</div>
       </div>
       <div class="grid2">
         <button id="ctaPickBtn" style="font-size:18px;padding:14px 16px">Me diga o pick</button>
@@ -45,12 +46,13 @@ button.secondary{background:#0a2140}
     </div>
   </div>
 </div>
+
 <div class="main">
   <div class="panel">
     <h2>Contexto do draft</h2>
     <div class="content grid">
       <div class="grid2">
-        <div><label class="small">Role</label><select id="role"><option>mid</option><option>top</option><option>jungle</option><option>adc</option><option>support</option></select></div>
+        <div><label class="small">Role</label><select id="role"><option>mid</option><option>top</option><option>jungle</option><option>adc</option><option>support</option><option>auto</option></select></div>
         <div><label class="small">Queue mode</label><select id="queueMode"><option value="solo">Solo Queue</option><option value="competitive">Competitive / Duo</option></select></div>
       </div>
       <div class="grid2">
@@ -60,7 +62,7 @@ button.secondary{background:#0a2140}
       <div><label class="small">Aliados</label><input id="allies" placeholder="Vi, Nautilus"></div>
       <div><label class="small">Inimigos</label><input id="enemies" placeholder="Ahri, Sejuani"></div>
       <div><label class="small">Bans</label><input id="bans" placeholder="Akali, Yasuo"></div>
-      <div><label class="small">Champion pool / comfort (ex.: ahri:40, syndra:10)</label><input id="comfort" placeholder="ahri:40, yasuo:20"></div>
+      <div><label class="small">Champion pool / comfort (ex.: ahri:40, yasuo:20)</label><input id="comfort" placeholder="ahri:40, yasuo:20"></div>
       <div class="grid2">
         <button id="runBtn">Analisar completo</button>
         <button class="secondary" id="autoBtn">Auto detect draft</button>
@@ -72,6 +74,10 @@ button.secondary{background:#0a2140}
       <div class="box">
         <div class="small">Resposta</div>
         <div id="responseBox" class="list"><div class="row"><span>Última resposta</span><b>-</b></div></div>
+      </div>
+      <div class="box" id="errorBox" style="display:none">
+        <div class="small">Erro</div>
+        <div id="errorText" class="error"></div>
       </div>
     </div>
   </div>
@@ -104,50 +110,32 @@ button.secondary{background:#0a2140}
 
   <div class="panel">
     <h2>Build / runes atuais</h2>
-    <div class="content" id="build"></div>
+    <div class="content" id="build"><div class="muted">Aguardando análise…</div></div>
     <div class="section"><div class="small">Recommendation now</div><div id="rec" class="recbox">Aguardando análise.</div></div>
     <div class="section"><div class="small">Win condition inimiga</div><div id="enemyWin" class="box">Aguardando análise.</div></div>
     <div class="section"><div class="small">AI explain melhorada</div><div id="counterPlan" class="box">Aguardando análise.</div></div>
   </div>
 </div>
+
 <script>
 const byId = id => document.getElementById(id);
 let payload = null;
 let selected = null;
 
+function showError(msg){
+  byId('errorBox').style.display = 'block';
+  byId('errorText').textContent = msg;
+}
+function clearError(){
+  byId('errorBox').style.display = 'none';
+  byId('errorText').textContent = '';
+}
 function updateResponseBox(ms, cached=false){
   byId('responseBox').innerHTML = `
     <div class="row"><span>Última resposta</span><b>${ms ?? '-'} ms</b></div>
     <div class="row"><span>Cache</span><b>${cached ? 'hit' : 'miss'}</b></div>
     <div class="row"><span>Meta UX</span><b>${ms != null && ms <= 300 ? 'ok' : 'ajustar'}</b></div>`;
 }
-async function instantPick(){
-  const body = {
-    context: {
-      role: byId('role').value,
-      queueMode: byId('queueMode').value,
-      side: byId('side').value,
-      pickOrder: Number(byId('pickOrder').value),
-      allies: byId('allies').value,
-      enemies: byId('enemies').value,
-      bans: byId('bans').value
-    },
-    playerProfile: { comfort: comfortMap() }
-  };
-  const r = await fetch('/instant-pick', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-  const d = await r.json();
-  updateResponseBox(d.responseMs, false);
-  if (d.autoContext?.role) byId('role').value = d.autoContext.role;
-  if (d.autoContext?.side) byId('side').value = d.autoContext.side;
-  const best = d.bestPick;
-  if (best){
-    byId('rec').innerHTML = `<div><b>Lock ${best.champ}</b></div><div class="small">Confidence ${best.confidence}% · ${d.responseMs} ms</div><div>${(best.reasons||[])[0] || ''}</div>`;
-  } else {
-    byId('rec').innerHTML = 'Revele mais picks para aumentar a confiança.';
-  }
-}
-
-
 function comfortMap(){
   const raw = byId('comfort').value.trim();
   const out = {};
@@ -158,27 +146,32 @@ function comfortMap(){
   return out;
 }
 async function connect(){
-  const r = await fetch('/status');
-  const d = await r.json();
-  byId('status').textContent = d.status==='ok' ? `Online · auto-detect ${d.liveClient ? 'live client' : 'manual'} · avg ${d.avgAnalyzeMs || 0} ms` : 'Offline';
-  byId('perf').innerHTML = `
-    <div class="row"><span>Analyze count</span><b>${d.metrics?.analyzeCount ?? 0}</b></div>
-    <div class="row"><span>Avg ms</span><b>${d.metrics?.avgAnalyzeMs ?? 0}</b></div>
-    <div class="row"><span>Last ms</span><b>${d.metrics?.lastAnalyzeMs ?? 0}</b></div>
-    <div class="row"><span>Concurrent</span><b>${d.metrics?.concurrentAnalyze ?? 0}</b></div>
-    <div class="row"><span>Max concurrent</span><b>${d.metrics?.maxConcurrentAnalyze ?? 0}</b></div>
-    <div class="row"><span>Errors</span><b>${d.metrics?.errors ?? 0}</b></div>`;
+  try{
+    const r = await fetch('/status');
+    const d = await r.json();
+    byId('status').textContent = d.status === 'ok'
+      ? `Online · ${d.mode} · ${d.dataset} champs`
+      : 'Offline';
+    byId('perf').innerHTML = `
+      <div class="row"><span>Analyze count</span><b>${d.metrics?.analyzeCount ?? 0}</b></div>
+      <div class="row"><span>Avg ms</span><b>${d.metrics?.avgAnalyzeMs ?? 0}</b></div>
+      <div class="row"><span>Last ms</span><b>${d.metrics?.lastAnalyzeMs ?? 0}</b></div>
+      <div class="row"><span>Errors</span><b>${d.metrics?.errors ?? 0}</b></div>`;
+  }catch(e){
+    byId('status').textContent = 'Offline';
+    showError('Falha ao conectar em /status: ' + e.message);
+  }
 }
 function activeTab(){ return document.querySelector('.tab.active')?.dataset.tab || 'top3'; }
 function currentList(){
   if (!payload) return [];
   const t = activeTab();
-  return t === 'top3' ? payload.picks : (payload.categories[t] || []);
+  return t === 'top3' ? (payload.picks || []) : (payload.categories?.[t] || []);
 }
 function selectPickByKey(key){ selected = key; render(); }
 function currentPick(){
   const all = [...(payload?.picks||[]), ...(payload?.categories?.blind||[]), ...(payload?.categories?.punish||[]), ...(payload?.categories?.comfort||[]), ...(payload?.categories?.compFit||[])];
-  return all.find(x=>x.champKey===selected) || all[0] || null;
+  return all.find(x => x.champKey === selected) || all[0] || null;
 }
 function renderCards(){
   const arr = currentList();
@@ -188,11 +181,17 @@ function renderCards(){
     <div class="score">${p.score}</div>
     <div class="small">Confidence ${p.confidence}% · WR ${p.avgWR}%</div>
     <div class="badges">${(p.labels||[]).map(l=>`<span class="badge">${l}</span>`).join('')}</div>
-  </div>`).join('');
+  </div>`).join('') || '<div class="muted" style="padding:14px">Sem picks ainda.</div>';
 }
 function renderPickMeta(){
   const p = currentPick();
-  if (!p) return;
+  if (!p){
+    byId('why').innerHTML = '';
+    byId('riskPlan').innerHTML = '';
+    byId('breakdown').innerHTML = '';
+    byId('whyWinGame').innerHTML = '';
+    return;
+  }
   byId('why').innerHTML = (p.reasons||[]).map(r=>`<div>✔ ${r}</div>`).join('');
   byId('riskPlan').innerHTML = `<div>⚠ ${p.risk}</div><div>🧭 ${p.plan10}</div>`;
   byId('whyWinGame').innerHTML = `<div>🏆 ${p.whyWins || 'Sem explicação adicional.'}</div>`;
@@ -213,19 +212,19 @@ function renderBuild(){
   if (!b) { byId('build').innerHTML = '<div class="muted">Sem build disponível.</div>'; return; }
   byId('build').innerHTML = `
     <div class="list">
-      <div><b>${b.champion}</b> · ${b.role} · ${b.cls || ''}</div>
+      <div><b>${b.champion || '-'}</b> · ${b.role || '-'} · ${b.cls || ''}</div>
       <div class="small">Summoner spells</div>
       <div>${(b.spells||[]).join(' · ') || '-'}</div>
       <div class="small">Starter</div>
       <div>${b.starter || '-'}</div>
       <div class="small">Runes</div>
-      <div><b>Primary:</b> ${[b.runes?.key,b.runes?.r1,b.runes?.r2,b.runes?.r3].filter(Boolean).join(' · ')}</div>
-      <div><b>Secondary:</b> ${[b.runes?.s1,b.runes?.s2].filter(Boolean).join(' · ')}</div>
-      <div><b>Shards:</b> ${(b.runes?.sh||[]).join(' · ')}</div>
+      <div><b>Primary:</b> ${[b.runes?.key,b.runes?.r1,b.runes?.r2,b.runes?.r3].filter(Boolean).join(' · ') || '-'}</div>
+      <div><b>Secondary:</b> ${[b.runes?.s1,b.runes?.s2].filter(Boolean).join(' · ') || '-'}</div>
+      <div><b>Shards:</b> ${(b.runes?.sh||[]).join(' · ') || '-'}</div>
       <div class="small">Build order</div>
-      <div class="list">${(b.build||[]).map((it,i)=>`<div>${i+1}. ${it}</div>`).join('')}</div>
+      <div class="list">${(b.build||[]).map((it,i)=>`<div>${i+1}. ${it}</div>`).join('') || '<div>-</div>'}</div>
       <div class="small">Coach notes</div>
-      <div class="list">${(b.notes||[]).map(n=>`<div>• ${n}</div>`).join('')}</div>
+      <div class="list">${(b.notes||[]).map(n=>`<div>• ${n}</div>`).join('') || '<div>-</div>'}</div>
     </div>`;
 }
 function renderRec(){
@@ -237,37 +236,86 @@ function renderRec(){
   byId('counterPlan').innerHTML = cp ? `<div><b>${cp.title}</b></div><div class="small" style="margin-top:6px">${cp.why || ''}</div><div class="list" style="margin-top:8px">${(cp.bullets||[]).map(x=>`<div>• ${x}</div>`).join('')}</div>` : 'Sem plano ainda.';
 }
 function render(){ renderCards(); renderPickMeta(); renderBuild(); renderRec(); }
+
 async function analyze(useAuto=false){
-  const body = {
-    role: byId('role').value,
-    queueMode: byId('queueMode').value,
-    side: byId('side').value,
-    pickOrder: Number(byId('pickOrder').value),
-    allies: byId('allies').value,
-    enemies: byId('enemies').value,
-    bans: byId('bans').value,
-    selectedPick: selected,
-    autoDetect: useAuto,
-    playerProfile: { comfort: comfortMap() }
-  };
-  const r = await fetch('/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-  payload = await r.json();
-  updateResponseBox(payload.responseMs, payload.cached);
-  if (useAuto && payload?.autoContext?.available){
-    byId('role').value = payload.ctx.role || byId('role').value;
-    byId('side').value = payload.ctx.side || byId('side').value;
-    byId('pickOrder').value = String(payload.ctx.pickOrder || byId('pickOrder').value);
+  clearError();
+  try{
+    const body = {
+      role: byId('role').value,
+      queueMode: byId('queueMode').value,
+      side: byId('side').value,
+      pickOrder: Number(byId('pickOrder').value),
+      allies: byId('allies').value,
+      enemies: byId('enemies').value,
+      bans: byId('bans').value,
+      selectedPick: selected,
+      autoDetect: useAuto,
+      playerProfile: { comfort: comfortMap() }
+    };
+    const r = await fetch('/analyze', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Falha em /analyze');
+    payload = d;
+    updateResponseBox(payload.responseMs, payload.cached);
+    selected = selected || payload?.picks?.[0]?.champKey || null;
+    render();
+    connect();
+  }catch(e){
+    showError(e.message);
   }
-  selected = selected || payload?.picks?.[0]?.champKey || null;
-  render();
-  connect();
 }
+async function instantPick(){
+  clearError();
+  try{
+    const body = {
+      context: {
+        role: byId('role').value,
+        queueMode: byId('queueMode').value,
+        side: byId('side').value,
+        pickOrder: Number(byId('pickOrder').value),
+        allies: byId('allies').value,
+        enemies: byId('enemies').value,
+        bans: byId('bans').value
+      },
+      playerProfile: { comfort: comfortMap() }
+    };
+    const r = await fetch('/instant-pick', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Falha em /instant-pick');
+    updateResponseBox(d.responseMs, false);
+    const best = d.bestPick;
+    if (best){
+      byId('rec').innerHTML = `<div><b>Lock ${best.champ}</b></div><div class="small">Confidence ${best.confidence}% · ${d.responseMs} ms</div><div>${(best.reasons||[])[0] || ''}</div>`;
+    } else {
+      byId('rec').innerHTML = 'Revele mais picks para aumentar a confiança.';
+    }
+  }catch(e){
+    showError(e.message);
+  }
+}
+
 window.selectPickByKey = selectPickByKey;
-document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); render(); });
-byId('runBtn').onclick = ()=>analyze(false);
-byId('autoBtn').onclick = ()=>analyze(true);
-byId('ctaPickBtn').onclick = ()=>instantPick();
-byId('hideOnboardingBtn').onclick = ()=>{ const el = byId('onboardCard'); if (el) el.style.display='none'; };
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  render();
+});
+byId('runBtn').onclick = () => analyze(false);
+byId('autoBtn').onclick = () => analyze(false);
+byId('ctaPickBtn').onclick = () => instantPick();
+byId('hideOnboardingBtn').onclick = () => {
+  const el = byId('onboardCard');
+  if (el) el.style.display = 'none';
+};
+
 connect();
 </script>
 </body>
